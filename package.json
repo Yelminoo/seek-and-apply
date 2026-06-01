@@ -1,0 +1,22 @@
+{
+  "name": "applypilot-server-ui",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"nodemon\" \"vite --port 5173\"",
+    "dev:frontend": "vite --port 5173",
+    "dev:backend": "nodemon",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^10.0.1",
+    "nodemon": "^3.1.14",
+    "vite": "^5.3.0"
+  }
+}
