@@ -297,13 +297,14 @@ function DashboardTab({ token }) {
   ];
 
   const trackerRows = [
-    { id:"applied",           label:"Applied",          color: C.blue },
-    { id:"awaiting_response", label:"Awaiting Response",color: C.warn },
-    { id:"response_received", label:"Response Received",color:"#34d399" },
-    { id:"interviewing",      label:"Interviewing",     color:"#a78bfa" },
-    { id:"offered",           label:"Offered",          color:"#fb923c" },
-    { id:"rejected",          label:"Rejected",         color: C.danger },
-    { id:"closed",            label:"Closed",           color: C.muted },
+    { id:"queue",     label:"Queue",      color: C.muted  },
+    { id:"qualified", label:"Qualified",  color: C.blue   },
+    { id:"ready",     label:"Ready",      color:"#34d399" },
+    { id:"applied",   label:"Applied",    color: C.blue   },
+    { id:"response",  label:"Response",   color: C.warn   },
+    { id:"interview", label:"Interview",  color:"#a78bfa" },
+    { id:"offer",     label:"Offer",      color:"#fb923c" },
+    { id:"rejected",  label:"Rejected",   color: C.danger },
   ];
 
   const funnelMax   = s.total || 1;
@@ -1696,23 +1697,48 @@ function JobsTab({ token, onGoToPipeline }) {
 
 // ─── Tracker tab ─────────────────────────────────────────────────────────────
 
-const TRACK_STATUSES = [
-  { id:"applied",           label:"Applied",          color:C.blue },
-  { id:"awaiting_response", label:"Awaiting Response", color:C.warn },
-  { id:"response_received", label:"Response Received", color:"#34d399" },
-  { id:"interviewing",      label:"Interviewing",      color:"#a78bfa" },
-  { id:"offered",           label:"Offered",           color:"#fb923c" },
-  { id:"rejected",          label:"Rejected",          color:C.danger },
-  { id:"closed",            label:"Closed",            color:C.muted },
+const BOARD_STAGES = [
+  { id:"queue",     label:"Queue",         color:C.muted,   type:"pipeline" },
+  { id:"qualified", label:"Qualified",     color:C.blue,    type:"pipeline" },
+  { id:"ready",     label:"Ready to Send", color:"#34d399", type:"pipeline" },
+  { id:"applied",   label:"Applied",       color:C.blue,    type:"app"      },
+  { id:"response",  label:"Response",      color:C.warn,    type:"app"      },
+  { id:"interview", label:"Interview",     color:"#a78bfa", type:"app"      },
+  { id:"offer",     label:"Offer",         color:"#fb923c", type:"app"      },
+  { id:"rejected",  label:"Rejected",      color:C.danger,  type:"mixed"    },
+  { id:"canceled",  label:"Canceled",      color:C.muted,   type:"app"      },
+];
+
+const ROUND_TYPES = [
+  { id:"hr",            label:"HR Screen"     },
+  { id:"technical",     label:"Technical"     },
+  { id:"system_design", label:"System Design" },
+  { id:"culture",       label:"Culture Fit"   },
+  { id:"final",         label:"Final"         },
+];
+
+const CHANNELS = [
+  { id:"linkedin", label:"LinkedIn" },
+  { id:"portal",   label:"Portal"   },
+  { id:"referral", label:"Referral" },
+  { id:"email",    label:"Email"    },
+];
+
+const RESPONSE_TYPES = [
+  { id:"hr_screen",   label:"HR Screen"   },
+  { id:"tech_screen", label:"Tech Screen" },
+  { id:"take_home",   label:"Take-Home"   },
+  { id:"panel",       label:"Panel"       },
+  { id:"offer",       label:"Offer"       },
 ];
 
 const NOTE_TYPES = [
-  { id:"note",          label:"Note",          icon:"📝" },
-  { id:"email",         label:"Email",         icon:"✉️" },
-  { id:"call",          label:"Call",          icon:"📞" },
-  { id:"interview",     label:"Interview",     icon:"🎯" },
-  { id:"offer",         label:"Offer",         icon:"💼" },
-  { id:"status_change", label:"Status change", icon:"🔄" },
+  { id:"note",          label:"Note",     icon:"📝" },
+  { id:"email",         label:"Email",    icon:"✉️" },
+  { id:"call",          label:"Call",     icon:"📞" },
+  { id:"interview",     label:"Interview",icon:"🎯" },
+  { id:"offer",         label:"Offer",    icon:"💼" },
+  { id:"status_change", label:"Status",   icon:"🔄" },
 ];
 
 function daysAgo(iso) {
@@ -1721,152 +1747,732 @@ function daysAgo(iso) {
   return diff === 0 ? "today" : diff === 1 ? "1d ago" : `${diff}d ago`;
 }
 
-function TrackerTab({ token }) {
-  const [board, setBoard]       = useState({});
-  const [alerts, setAlerts]     = useState({ overdue:[], interview_soon:[] });
-  const [loading, setLoading]   = useState(true);
-  const [drawer, setDrawer]     = useState(null);   // job object being edited
-  const [drawerData, setDrawerData] = useState({});
-  const [noteText, setNoteText] = useState("");
-  const [noteType, setNoteType] = useState("note");
-  const [saving, setSaving]     = useState(false);
+// ── Reusable tracker components (module-level per rerender-no-inline-components) ──
 
-  const load = async () => {
+function ScoreBadge({ score }) {
+  if (score == null) return null;
+  const color = score >= 7 ? C.accent : score >= 5 ? C.warn : C.danger;
+  return (
+    <span style={{
+      background:color+"22", border:`1px solid ${color}55`,
+      borderRadius:4, padding:"1px 6px", fontSize:10, color, fontWeight:700,
+    }}>{score}/10</span>
+  );
+}
+
+function NoteTimeline({ notes, onDelete }) {
+  if (!notes?.length) return <div style={{ fontSize:11, color:C.muted }}>No activity yet.</div>;
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      {notes.map(n => {
+        const nt = NOTE_TYPES.find(t => t.id === n.note_type) || NOTE_TYPES[0];
+        const isStatus = n.note_type === "status_change";
+        return (
+          <div key={n.id} style={{
+            borderLeft:`2px solid ${isStatus ? C.accent : C.border}`,
+            paddingLeft:12, paddingTop:4, paddingBottom:4, position:"relative",
+          }}>
+            <div style={{ fontSize:10, color:C.muted, marginBottom:2 }}>
+              {nt.icon} {nt.label} · {new Date(n.created_at).toLocaleString()}
+            </div>
+            <div style={{ fontSize:12, color:isStatus ? C.accent : C.text, lineHeight:1.5 }}>{n.note}</div>
+            {!isStatus ? (
+              <button onClick={() => onDelete(n.id)} style={{
+                position:"absolute", top:4, right:0,
+                background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11,
+              }}>✕</button>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ActivityNoteInput({ entityType, entityId, token, onSaved }) {
+  const [text, setText] = useState("");
+  const [type, setType] = useState("note");
+  const submit = async () => {
+    if (!text.trim()) return;
+    await api("POST", "/tracker/notes", { entity_type:entityType, entity_id:entityId, note:text.trim(), note_type:type }, token);
+    setText("");
+    onSaved();
+  };
+  return (
+    <div>
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+        {NOTE_TYPES.filter(n => n.id !== "status_change").map(n => (
+          <button key={n.id} onClick={() => setType(n.id)} style={{
+            padding:"3px 9px", borderRadius:12, fontSize:10, fontFamily:"inherit", cursor:"pointer",
+            background:type===n.id ? C.accentDim : "transparent",
+            color:type===n.id ? C.accent : C.muted,
+            border:`1px solid ${type===n.id ? C.accent : C.border}`,
+          }}>{n.icon} {n.label}</button>
+        ))}
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <textarea style={{ ...css.input, flex:1, height:60, resize:"vertical", fontSize:11 }}
+          placeholder="Write a note, email, call outcome…"
+          value={text} onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key==="Enter" && e.metaKey) submit(); }} />
+        <button onClick={submit} style={{ ...css.btn(), padding:"8px 14px", fontSize:11, alignSelf:"flex-end" }}>+ Add</button>
+      </div>
+    </div>
+  );
+}
+
+function ChecklistSection({ applicationId, checklist, token, onRefresh }) {
+  const [newItem, setNewItem] = useState("");
+  const add = async () => {
+    if (!newItem.trim()) return;
+    await api("POST", "/tracker/checklist", { application_id:applicationId, item:newItem.trim() }, token);
+    setNewItem(""); onRefresh();
+  };
+  const toggle = async (id, done) => {
+    await api("PATCH", `/tracker/checklist/${id}`, { done:!done }, token); onRefresh();
+  };
+  const remove = async (id) => {
+    await api("DELETE", `/tracker/checklist/${id}`, null, token); onRefresh();
+  };
+  return (
+    <div>
+      <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
+        {checklist.length === 0 ? (
+          <div style={{ fontSize:11, color:C.muted }}>No prep items yet.</div>
+        ) : checklist.map(item => (
+          <div key={item.id} style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <input type="checkbox" checked={!!item.done} onChange={() => toggle(item.id, item.done)}
+              style={{ accentColor:C.accent, cursor:"pointer" }} />
+            <span style={{ fontSize:12, flex:1, color:item.done?C.muted:C.text,
+              textDecoration:item.done?"line-through":"none" }}>{item.item}</span>
+            <button onClick={() => remove(item.id)} style={{
+              background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11,
+            }}>✕</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <input style={{ ...css.input, fontSize:11 }} placeholder="Add prep item…"
+          value={newItem} onChange={e => setNewItem(e.target.value)}
+          onKeyDown={e => { if (e.key==="Enter") add(); }} />
+        <button onClick={add} style={{ ...css.btn("outline"), padding:"6px 12px", fontSize:11 }}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function RoundRow({ round, token, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    round_type:round.round_type, scheduled_at:round.scheduled_at||"",
+    interviewer_names:round.interviewer_names||"", outcome:round.outcome,
+    tasks:round.tasks||"", notes:round.notes||"",
+  });
+  const save = async () => {
+    await api("PATCH", `/tracker/round/${round.id}`, form, token);
+    setEditing(false); onUpdate();
+  };
+  const outcomeColor = round.outcome==="passed" ? C.accent : round.outcome==="failed" ? C.danger : C.warn;
+  return (
+    <div style={{ borderLeft:`3px solid ${outcomeColor}`, paddingLeft:12, marginBottom:12 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+        <span style={{ fontSize:12, fontWeight:700, color:C.text }}>
+          Round {round.round_number} · {ROUND_TYPES.find(r=>r.id===round.round_type)?.label||round.round_type}
+        </span>
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+          <span style={{ fontSize:10, color:outcomeColor, fontWeight:700 }}>{round.outcome}</span>
+          <button onClick={() => setEditing(e=>!e)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11 }}>
+            {editing ? "✕" : "✎"}
+          </button>
+        </div>
+      </div>
+      {round.scheduled_at ? (
+        <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>
+          {new Date(round.scheduled_at).toLocaleString()}{round.interviewer_names ? ` · ${round.interviewer_names}` : ""}
+        </div>
+      ) : null}
+      {round.tasks ? <div style={{ fontSize:11, color:C.text, marginBottom:4 }}>{round.tasks}</div> : null}
+      {editing ? (
+        <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:8 }}>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {ROUND_TYPES.map(rt => (
+              <button key={rt.id} onClick={() => setForm(f=>({...f,round_type:rt.id}))} style={{
+                padding:"2px 8px", borderRadius:4, fontSize:10, fontFamily:"inherit", cursor:"pointer",
+                background:form.round_type===rt.id ? C.accentDim : "transparent",
+                color:form.round_type===rt.id ? C.accent : C.muted,
+                border:`1px solid ${form.round_type===rt.id ? C.accent : C.border}`,
+              }}>{rt.label}</button>
+            ))}
+          </div>
+          <input type="datetime-local" style={{ ...css.input, fontSize:11 }}
+            value={form.scheduled_at} onChange={e => setForm(f=>({...f,scheduled_at:e.target.value}))} />
+          <input style={{ ...css.input, fontSize:11 }} placeholder="Interviewers"
+            value={form.interviewer_names} onChange={e => setForm(f=>({...f,interviewer_names:e.target.value}))} />
+          <textarea style={{ ...css.input, fontSize:11, height:48, resize:"vertical" }} placeholder="Tasks / questions"
+            value={form.tasks} onChange={e => setForm(f=>({...f,tasks:e.target.value}))} />
+          <textarea style={{ ...css.input, fontSize:11, height:48, resize:"vertical" }} placeholder="Notes"
+            value={form.notes} onChange={e => setForm(f=>({...f,notes:e.target.value}))} />
+          <div style={{ display:"flex", gap:6 }}>
+            {["pending","passed","failed"].map(o => (
+              <button key={o} onClick={() => setForm(f=>({...f,outcome:o}))} style={{
+                padding:"4px 12px", borderRadius:4, fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                background:form.outcome===o ? (o==="passed"?C.accent:o==="failed"?C.danger:C.warn)+"33" : "transparent",
+                color:o==="passed"?C.accent:o==="failed"?C.danger:C.warn,
+                border:`1px solid ${form.outcome===o?(o==="passed"?C.accent:o==="failed"?C.danger:C.warn):C.border}`,
+              }}>{o}</button>
+            ))}
+          </div>
+          <button onClick={save} style={{ ...css.btn(), fontSize:11, padding:"6px 0" }}>✓ Save Round</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OfferSection({ offer, token, onUpdate }) {
+  const [form, setForm] = useState({
+    base_salary:offer?.base_salary||"", bonus:offer?.bonus||"",
+    equity:offer?.equity||"", benefits:offer?.benefits||"",
+    start_date:offer?.start_date||"", offer_deadline:offer?.offer_deadline||"",
+    tc_notes:offer?.tc_notes||"", negotiation_notes:offer?.negotiation_notes||"",
+  });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try { await api("PATCH", `/tracker/offer/${offer.id}`, form, token); onUpdate(); }
+    finally { setSaving(false); }
+  };
+  const decide = async (decision) => {
+    await api("PATCH", `/tracker/offer/${offer.id}`, { decision }, token); onUpdate();
+  };
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      {[
+        ["base_salary","Base salary","text"],["bonus","Bonus","text"],
+        ["equity","Equity","text"],["benefits","Benefits","text"],
+        ["start_date","Start date","date"],["offer_deadline","Offer deadline","date"],
+      ].map(([k,label,type]) => (
+        <div key={k} style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <label style={{ ...css.label, marginBottom:0, width:120, flexShrink:0 }}>{label}</label>
+          <input type={type} style={{ ...css.input, fontSize:11 }}
+            value={form[k]} onChange={e => setForm(f=>({...f,[k]:e.target.value}))} />
+        </div>
+      ))}
+      <div>
+        <label style={css.label}>T&C Notes</label>
+        <textarea style={{ ...css.input, height:60, resize:"vertical", fontSize:11 }}
+          value={form.tc_notes} onChange={e => setForm(f=>({...f,tc_notes:e.target.value}))} />
+      </div>
+      <div>
+        <label style={css.label}>Negotiation Notes</label>
+        <textarea style={{ ...css.input, height:60, resize:"vertical", fontSize:11 }}
+          value={form.negotiation_notes} onChange={e => setForm(f=>({...f,negotiation_notes:e.target.value}))} />
+      </div>
+      <button onClick={save} disabled={saving} style={{ ...css.btn("outline"), fontSize:11 }}>
+        {saving ? "Saving…" : "✓ Save Offer Details"}
+      </button>
+      {offer ? (
+        <div>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>
+            Decision · current: <span style={{ color:offer.decision==="accepted"?C.accent:C.text }}>{offer.decision}</span>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            {[{id:"accepted",label:"✓ Accept",color:C.accent},{id:"countered",label:"↔ Counter",color:C.warn},{id:"declined",label:"✕ Decline",color:C.danger}].map(d => (
+              <button key={d.id} onClick={() => decide(d.id)} style={{
+                flex:1, padding:"8px 0", borderRadius:6, fontSize:11, fontFamily:"inherit", cursor:"pointer", fontWeight:700,
+                background:offer.decision===d.id ? d.color+"33" : "transparent",
+                color:d.color, border:`1px solid ${offer.decision===d.id?d.color:C.border}`,
+              }}>{d.label}</button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PipelineCard({ record, stageColor, onClick }) {
+  return (
+    <div onClick={onClick} style={{
+      ...css.card, padding:"10px 12px", cursor:"pointer",
+      borderLeft:`3px solid ${stageColor}`, transition:"background 0.15s",
+    }}
+      onMouseEnter={e => { e.currentTarget.style.background="#1a1d26"; }}
+      onMouseLeave={e => { e.currentTarget.style.background=C.surface; }}>
+      <div style={{ fontSize:12, fontWeight:600, color:C.text, lineHeight:1.3, marginBottom:4,
+        overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
+        {record.title || record.job_url?.split("/").pop() || "Untitled"}
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:4 }}>
+        <span style={{ fontSize:10, color:C.muted }}>{record.site||"—"}</span>
+        <ScoreBadge score={record.fit_score} />
+      </div>
+      <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>
+        {daysAgo(record.updated_at)}
+        {record.app_count > 0 ? <span style={{ marginLeft:6, color:C.blue }}>{record.app_count} app{record.app_count>1?"s":""}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function ApplicationCard({ record, stageColor, onClick }) {
+  return (
+    <div onClick={onClick} style={{
+      ...css.card, padding:"10px 12px", cursor:"pointer",
+      borderLeft:`3px solid ${stageColor}`, transition:"background 0.15s",
+    }}
+      onMouseEnter={e => { e.currentTarget.style.background="#1a1d26"; }}
+      onMouseLeave={e => { e.currentTarget.style.background=C.surface; }}>
+      <div style={{ fontSize:12, fontWeight:600, color:C.text, lineHeight:1.3, marginBottom:4,
+        overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
+        {record.title||"Untitled"}
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <span style={{ fontSize:10, color:C.muted }}>{record.site||"—"}</span>
+        <ScoreBadge score={record.fit_score} />
+      </div>
+      <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>
+        {record.channel ? <span style={{ marginRight:6 }}>{record.channel}</span> : null}
+        {daysAgo(record.applied_at)}
+      </div>
+      {record.rounds_total > 0 ? (
+        <div style={{ fontSize:10, color:"#a78bfa", marginTop:3 }}>
+          {record.rounds_passed}/{record.rounds_total} rounds passed
+          {record.rounds_pending > 0 ? ` · ${record.rounds_pending} pending` : ""}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PipelineDrawer({ pid, token, onClose, onRefresh }) {
+  const [detail, setDetail]       = useState(null);
+  const [form, setForm]           = useState({});
+  const [saving, setSaving]       = useState(false);
+  const [applyChannel, setApplyChannel] = useState("portal");
+
+  const load = useCallback(async () => {
+    const d = await api("GET", `/tracker/pipeline/${pid}`, null, token);
+    setDetail(d);
+    setForm({
+      queue_notes:d.queue_notes||"", fit_notes:d.fit_notes||"",
+      resume_version:d.resume_version||"", cover_notes:d.cover_notes||"",
+      target_salary:d.target_salary||"", referral_contact:d.referral_contact||"",
+      channel:d.channel||"portal", apply_deadline:d.apply_deadline||"",
+    });
+  }, [pid, token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setSaving(true);
+    try { await api("PATCH", `/tracker/pipeline/${pid}`, form, token); }
+    finally { setSaving(false); }
+  };
+
+  const action = async (endpoint, body={}) => {
+    await api("POST", endpoint, body, token); await load(); onRefresh();
+  };
+
+  if (!detail) return <div style={{ padding:24, color:C.muted }}>Loading…</div>;
+
+  const { job, stage, notes, applications } = detail;
+  const stageInfo = BOARD_STAGES.find(s => s.id===stage) || BOARD_STAGES[0];
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
+      <div style={{ padding:"20px 24px 16px", borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+          <div style={{ flex:1, marginRight:12 }}>
+            <a href={detail.job_url} target="_blank" rel="noreferrer"
+              style={{ color:C.blue, textDecoration:"none", fontSize:14, fontWeight:700, lineHeight:1.4, display:"block" }}>
+              {job?.title||"Untitled"}
+            </a>
+            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>
+              {job?.site}{job?.location ? ` · ${job.location}` : ""}
+              {job?.fit_score != null ? <span style={{ marginLeft:8 }}>★ {job.fit_score}/10</span> : null}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:18 }}>✕</button>
+        </div>
+        <div style={{ marginTop:10 }}>
+          <span style={{
+            display:"inline-block", padding:"3px 10px", borderRadius:12, fontSize:10, fontWeight:700,
+            background:stageInfo.color+"22", color:stageInfo.color, border:`1px solid ${stageInfo.color}44`,
+          }}>{stageInfo.label}</span>
+        </div>
+      </div>
+
+      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px", display:"flex", flexDirection:"column", gap:20 }}>
+        <div>
+          <label style={css.label}>Queue Notes</label>
+          <textarea style={{ ...css.input, height:72, resize:"vertical", fontSize:11 }}
+            placeholder="Why queued? Any red flags?" value={form.queue_notes}
+            onChange={e => setForm(f=>({...f,queue_notes:e.target.value}))} />
+        </div>
+
+        {(stage==="qualified"||stage==="ready"||stage==="applied") ? (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>Qualification</div>
+            <div>
+              <label style={css.label}>Why I'm a good fit</label>
+              <textarea style={{ ...css.input, height:72, resize:"vertical", fontSize:11 }}
+                value={form.fit_notes} onChange={e => setForm(f=>({...f,fit_notes:e.target.value}))} />
+            </div>
+            {[["resume_version","Resume version","text"],["cover_notes","Cover letter notes","text"],
+              ["target_salary","Target salary","text"],["referral_contact","Referral contact","text"]].map(([k,label,type]) => (
+              <div key={k} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <label style={{ ...css.label, marginBottom:0, width:140, flexShrink:0 }}>{label}</label>
+                <input type={type} style={{ ...css.input, fontSize:11 }}
+                  value={form[k]} onChange={e => setForm(f=>({...f,[k]:e.target.value}))} />
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {(stage==="ready"||stage==="applied") ? (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>Application Config</div>
+            <div>
+              <label style={css.label}>Channel</label>
+              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                {CHANNELS.map(ch => (
+                  <button key={ch.id} onClick={() => setForm(f=>({...f,channel:ch.id}))} style={{
+                    padding:"4px 12px", borderRadius:6, fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                    background:form.channel===ch.id?C.accentDim:"transparent",
+                    color:form.channel===ch.id?C.accent:C.muted,
+                    border:`1px solid ${form.channel===ch.id?C.accent:C.border}`,
+                  }}>{ch.label}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <label style={{ ...css.label, marginBottom:0, width:140, flexShrink:0 }}>Apply-by deadline</label>
+              <input type="date" style={{ ...css.input, fontSize:11 }}
+                value={form.apply_deadline} onChange={e => setForm(f=>({...f,apply_deadline:e.target.value}))} />
+            </div>
+          </div>
+        ) : null}
+
+        <button onClick={save} disabled={saving} style={{ ...css.btn("outline"), fontSize:11 }}>
+          {saving ? "Saving…" : "✓ Save"}
+        </button>
+
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>Actions</div>
+          {stage==="queue" ? (
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={() => action(`/tracker/pipeline/${pid}/qualify`)} style={{ ...css.btn(), flex:1, fontSize:11 }}>Qualify →</button>
+              <button onClick={() => action(`/tracker/pipeline/${pid}/discard`)} style={{ ...css.btnDanger, flex:1, fontSize:11 }}>Discard</button>
+            </div>
+          ) : null}
+          {stage==="qualified" ? (
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={() => action(`/tracker/pipeline/${pid}/ready`)} style={{ ...css.btn(), flex:1, fontSize:11 }}>Mark Ready →</button>
+              <button onClick={() => action(`/tracker/pipeline/${pid}/send-back`)} style={{ ...css.btn("outline"), flex:1, fontSize:11 }}>← Queue</button>
+            </div>
+          ) : null}
+          {stage==="ready" ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              <div>
+                <label style={css.label}>Apply via</label>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+                  {CHANNELS.map(ch => (
+                    <button key={ch.id} onClick={() => setApplyChannel(ch.id)} style={{
+                      padding:"4px 12px", borderRadius:6, fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                      background:applyChannel===ch.id?C.accentDim:"transparent",
+                      color:applyChannel===ch.id?C.accent:C.muted,
+                      border:`1px solid ${applyChannel===ch.id?C.accent:C.border}`,
+                    }}>{ch.label}</button>
+                  ))}
+                </div>
+              </div>
+              <button onClick={() => action(`/tracker/pipeline/${pid}/apply`, { channel:applyChannel })} style={{ ...css.btn(), fontSize:11 }}>Apply Now →</button>
+              <button onClick={() => action(`/tracker/pipeline/${pid}/send-back`)} style={{ ...css.btn("outline"), fontSize:11 }}>← Qualified</button>
+            </div>
+          ) : null}
+        </div>
+
+        {applications?.length > 0 ? (
+          <div>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>
+              Applications ({applications.length})
+            </div>
+            {applications.map(a => (
+              <div key={a.id} style={{ fontSize:11, color:C.text, marginBottom:6, display:"flex", justifyContent:"space-between" }}>
+                <span>{a.channel} · {a.app_stage}</span>
+                <span style={{ color:C.muted }}>{daysAgo(a.applied_at)}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10 }}>Activity</div>
+          <ActivityNoteInput entityType="pipeline" entityId={pid} token={token} onSaved={load} />
+          <div style={{ marginTop:12 }}>
+            <NoteTimeline notes={notes} onDelete={async id => { await api("DELETE",`/tracker/notes/${id}`,null,token); load(); }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ApplicationDrawer({ aid, token, onClose, onRefresh }) {
+  const [detail, setDetail]       = useState(null);
+  const [form, setForm]           = useState({});
+  const [saving, setSaving]       = useState(false);
+  const [showReject, setShowReject] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+
+  const load = useCallback(async () => {
+    const d = await api("GET", `/tracker/application/${aid}`, null, token);
+    setDetail(d);
+    setForm({
+      contact_name:d.contact_name||"", contact_email:d.contact_email||"",
+      followup_date:d.followup_date||"", response_type:d.response_type||"",
+      response_date:d.response_date||"", interview_booked:d.interview_booked||"",
+      interview_format:d.interview_format||"", interviewer_names:d.interviewer_names||"",
+    });
+  }, [aid, token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setSaving(true);
+    try { await api("PATCH", `/tracker/application/${aid}`, form, token); }
+    finally { setSaving(false); }
+  };
+
+  const transition = async (endpoint, body={}) => {
+    await api("POST", endpoint, body, token); await load(); onRefresh();
+  };
+
+  if (!detail) return <div style={{ padding:24, color:C.muted }}>Loading…</div>;
+
+  const { job, app_stage, rounds, offer, checklist, notes } = detail;
+  const stageInfo = BOARD_STAGES.find(s => s.id===app_stage) || BOARD_STAGES[3];
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
+      <div style={{ padding:"20px 24px 16px", borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+          <div style={{ flex:1, marginRight:12 }}>
+            <a href={detail.job_url} target="_blank" rel="noreferrer"
+              style={{ color:C.blue, textDecoration:"none", fontSize:14, fontWeight:700, lineHeight:1.4, display:"block" }}>
+              {job?.title||"Untitled"}
+            </a>
+            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>
+              {job?.site}{job?.location ? ` · ${job.location}` : ""}
+              {job?.fit_score != null ? <span style={{ marginLeft:8 }}>★ {job.fit_score}/10</span> : null}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:18 }}>✕</button>
+        </div>
+        <div style={{ marginTop:10 }}>
+          <span style={{
+            display:"inline-block", padding:"3px 10px", borderRadius:12, fontSize:10, fontWeight:700,
+            background:stageInfo.color+"22", color:stageInfo.color, border:`1px solid ${stageInfo.color}44`,
+          }}>{stageInfo.label}</span>
+          <span style={{ fontSize:10, color:C.muted, marginLeft:10 }}>
+            via {detail.channel} · applied {daysAgo(detail.applied_at)}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px", display:"flex", flexDirection:"column", gap:20 }}>
+        <div>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10 }}>Contact</div>
+          {[["contact_name","Name","text"],["contact_email","Email","text"],["followup_date","Follow-up","date"]].map(([k,label,type]) => (
+            <div key={k} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+              <label style={{ ...css.label, marginBottom:0, width:100, flexShrink:0 }}>{label}</label>
+              <input type={type} style={{ ...css.input, fontSize:11 }}
+                value={form[k]} onChange={e => setForm(f=>({...f,[k]:e.target.value}))} />
+            </div>
+          ))}
+        </div>
+
+        {(app_stage==="response"||app_stage==="interview"||app_stage==="offer") ? (
+          <div>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10 }}>Response</div>
+            <div style={{ marginBottom:8 }}>
+              <label style={css.label}>Response type</label>
+              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                {RESPONSE_TYPES.map(rt => (
+                  <button key={rt.id} onClick={() => setForm(f=>({...f,response_type:rt.id}))} style={{
+                    padding:"3px 10px", borderRadius:6, fontSize:10, fontFamily:"inherit", cursor:"pointer",
+                    background:form.response_type===rt.id?C.accentDim:"transparent",
+                    color:form.response_type===rt.id?C.accent:C.muted,
+                    border:`1px solid ${form.response_type===rt.id?C.accent:C.border}`,
+                  }}>{rt.label}</button>
+                ))}
+              </div>
+            </div>
+            {[["interview_booked","Interview date","datetime-local"],["interview_format","Format","text"],["interviewer_names","Interviewers","text"]].map(([k,label,type]) => (
+              <div key={k} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                <label style={{ ...css.label, marginBottom:0, width:120, flexShrink:0 }}>{label}</label>
+                <input type={type} style={{ ...css.input, fontSize:11 }}
+                  value={form[k]} onChange={e => setForm(f=>({...f,[k]:e.target.value}))} />
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <button onClick={save} disabled={saving} style={{ ...css.btn("outline"), fontSize:11 }}>
+          {saving ? "Saving…" : "✓ Save"}
+        </button>
+
+        {app_stage==="response" ? (
+          <div>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10 }}>Prep Checklist</div>
+            <ChecklistSection applicationId={aid} checklist={checklist} token={token} onRefresh={load} />
+          </div>
+        ) : null}
+
+        {(app_stage==="interview"||app_stage==="offer") ? (
+          <div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>Interview Rounds</div>
+              <button onClick={async () => { await api("POST",`/tracker/application/${aid}/rounds`,{round_type:"technical"},token); load(); }}
+                style={{ ...css.btn("outline"), padding:"3px 10px", fontSize:10 }}>+ Add Round</button>
+            </div>
+            {rounds.length===0 ? (
+              <div style={{ fontSize:11, color:C.muted }}>No rounds yet.</div>
+            ) : rounds.map(r => <RoundRow key={r.id} round={r} token={token} onUpdate={load} />)}
+          </div>
+        ) : null}
+
+        {app_stage==="offer" ? (
+          <div>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10 }}>Offer Details</div>
+            {offer ? <OfferSection offer={offer} token={token} onUpdate={load} /> : (
+              <div style={{ fontSize:11, color:C.muted }}>Offer record loading…</div>
+            )}
+          </div>
+        ) : null}
+
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>Actions</div>
+          {app_stage==="applied" ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              <button onClick={() => transition(`/tracker/application/${aid}/response`)} style={{ ...css.btn(), fontSize:11 }}>Got Response →</button>
+              <button onClick={() => transition(`/tracker/application/${aid}/apply-again`,{channel:detail.channel})} style={{ ...css.btn("outline"), fontSize:11 }}>Apply Again (new attempt)</button>
+            </div>
+          ) : null}
+          {app_stage==="response" ? (
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={() => transition(`/tracker/application/${aid}/interview`)} style={{ ...css.btn(), flex:1, fontSize:11 }}>Confirm Interview →</button>
+              <button onClick={() => transition(`/tracker/application/${aid}/offer`)} style={{ ...css.btn("outline"), flex:1, fontSize:11 }}>Direct Offer →</button>
+            </div>
+          ) : null}
+          {app_stage==="interview" ? (
+            <button onClick={() => transition(`/tracker/application/${aid}/offer`)} style={{ ...css.btn(), fontSize:11, width:"100%" }}>Offer Received →</button>
+          ) : null}
+          {(app_stage!=="rejected"&&app_stage!=="canceled"&&app_stage!=="offer") ? (
+            showReject ? (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                <input style={{ ...css.input, fontSize:11 }} placeholder="Rejection reason (optional)"
+                  value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={() => transition(`/tracker/application/${aid}/reject`,{reason:rejectReason})}
+                    style={{ ...css.btnDanger, flex:1, fontSize:11 }}>Confirm Rejected</button>
+                  <button onClick={() => setShowReject(false)} style={{ ...css.btn("outline"), flex:1, fontSize:11 }}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setShowReject(true)} style={{ ...css.btnDanger, fontSize:11 }}>Mark Rejected</button>
+            )
+          ) : null}
+        </div>
+
+        <div>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10 }}>Activity</div>
+          <ActivityNoteInput entityType="application" entityId={aid} token={token} onSaved={load} />
+          <div style={{ marginTop:12 }}>
+            <NoteTimeline notes={notes} onDelete={async id => { await api("DELETE",`/tracker/notes/${id}`,null,token); load(); }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TrackerTab({ token }) {
+  const [board, setBoard]           = useState({});
+  const [alerts, setAlerts]         = useState({ overdue:[], interview_soon:[] });
+  const [loading, setLoading]       = useState(true);
+  const [drawerType, setDrawerType] = useState(null);
+  const [drawerId, setDrawerId]     = useState(null);
+
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [b, a] = await Promise.all([
         api("GET", "/tracker/board", null, token),
-        api("GET", "/tracker/alerts", null, token),
+        api("GET", "/tracker/alerts", null, token).catch(() => ({ overdue:[], interview_soon:[] })),
       ]);
       setBoard(b);
       setAlerts(a);
-    } catch {}
+    } catch (_) {}
     finally { setLoading(false); }
-  };
+  }, [token]);
 
-  useEffect(() => { load(); }, [token]);
+  useEffect(() => { load(); }, [load]);
 
-  const openDrawer = (job) => {
-    setDrawer(job);
-    setDrawerData({
-      status:         job.status,
-      followup_date:  job.followup_date  || "",
-      interview_date: job.interview_date || "",
-      offer_deadline: job.offer_deadline || "",
-      contact_name:   job.contact_name   || "",
-      contact_email:  job.contact_email  || "",
-      salary_offered: job.salary_offered || "",
-    });
-    setNoteText("");
-    setNoteType("note");
-  };
-
-  const saveDrawer = async () => {
-    if (!drawer) return;
-    setSaving(true);
-    try {
-      await api("POST", "/tracker/upsert", { job_url: drawer.job_url, ...drawerData }, token);
-      await load();
-      // Refresh drawer with updated data
-      const updated = Object.values(board).flat().find(j => j.job_url === drawer.job_url);
-      if (updated) openDrawer({ ...updated, ...drawerData });
-    } finally { setSaving(false); }
-  };
-
-  const addNote = async () => {
-    if (!noteText.trim() || !drawer) return;
-    await api("POST", "/tracker/notes", { job_url: drawer.job_url, note: noteText.trim(), note_type: noteType }, token);
-    setNoteText("");
-    await load();
-  };
-
-  const removeNote = async (id) => {
-    await api("DELETE", `/tracker/notes/${id}`, null, token);
-    await load();
-  };
-
-  const quickStatus = async (job, status) => {
-    await api("POST", "/tracker/upsert", { job_url: job.job_url, status }, token);
-    await load();
-  };
-
-  const statusColor = (id) => TRACK_STATUSES.find(s => s.id === id)?.color || C.muted;
+  const openPipeline = (id) => { setDrawerType("pipeline"); setDrawerId(id); };
+  const openApp      = (id) => { setDrawerType("app");      setDrawerId(id); };
+  const closeDrawer  = ()   => { setDrawerType(null);       setDrawerId(null); };
 
   return (
     <div style={{ position:"relative" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-        <SectionTitle>Application Tracker</SectionTitle>
+        <SectionTitle>Application Pipeline</SectionTitle>
         <button onClick={load} style={{ ...css.btn("outline"), fontSize:11, padding:"5px 12px" }}>↻ Refresh</button>
       </div>
 
-      {/* Alert bar */}
-      {(alerts.overdue.length > 0 || alerts.interview_soon.length > 0) && (
+      {(alerts.overdue.length > 0 || alerts.interview_soon.length > 0) ? (
         <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap" }}>
-          {alerts.overdue.length > 0 && (
+          {alerts.overdue.length > 0 ? (
             <div style={{ ...css.card, borderColor:C.warn+"55", padding:"10px 16px", fontSize:12, color:C.warn, flex:1 }}>
-              ⚠ <strong>{alerts.overdue.length}</strong> overdue follow-up{alerts.overdue.length > 1 ? "s" : ""} — no update in 7+ days
+              ⚠ <strong>{alerts.overdue.length}</strong> overdue follow-up{alerts.overdue.length>1?"s":""} — no update in 7+ days
             </div>
-          )}
-          {alerts.interview_soon.length > 0 && (
+          ) : null}
+          {alerts.interview_soon.length > 0 ? (
             <div style={{ ...css.card, borderColor:"#a78bfa55", padding:"10px 16px", fontSize:12, color:"#a78bfa", flex:1 }}>
-              🎯 <strong>{alerts.interview_soon.length}</strong> interview{alerts.interview_soon.length > 1 ? "s" : ""} within 48 hours
+              🎯 <strong>{alerts.interview_soon.length}</strong> interview{alerts.interview_soon.length>1?"s":""} within 48 hours
             </div>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       {loading ? <Loader /> : (
-        /* Kanban board — horizontal scroll */
         <div style={{ display:"flex", gap:12, overflowX:"auto", paddingBottom:16, alignItems:"flex-start" }}>
-          {TRACK_STATUSES.map(status => {
-            const jobs = board[status.id] || [];
+          {BOARD_STAGES.map(stage => {
+            const items = board[stage.id] || [];
             return (
-              <div key={status.id} style={{ minWidth:210, width:210, flexShrink:0 }}>
-                {/* Column header */}
+              <div key={stage.id} style={{ minWidth:210, width:210, flexShrink:0 }}>
                 <div style={{
                   padding:"8px 12px", borderRadius:"6px 6px 0 0",
-                  background: status.color + "22", borderBottom:`2px solid ${status.color}`,
+                  background:stage.color+"22", borderBottom:`2px solid ${stage.color}`,
                   display:"flex", justifyContent:"space-between", alignItems:"center",
                 }}>
-                  <span style={{ fontSize:11, fontWeight:700, color:status.color, letterSpacing:"0.06em" }}>
-                    {status.label.toUpperCase()}
+                  <span style={{ fontSize:11, fontWeight:700, color:stage.color, letterSpacing:"0.06em" }}>
+                    {stage.label.toUpperCase()}
                   </span>
-                  <span style={{ fontSize:10, color:status.color, background:status.color+"33", borderRadius:10, padding:"1px 7px", fontWeight:700 }}>
-                    {jobs.length}
+                  <span style={{ fontSize:10, color:stage.color, background:stage.color+"33", borderRadius:10, padding:"1px 7px", fontWeight:700 }}>
+                    {items.length}
                   </span>
                 </div>
-
-                {/* Cards */}
-                <div style={{ display:"flex", flexDirection:"column", gap:8, paddingTop:8, minHeight:100 }}>
-                  {jobs.length === 0 && (
+                <div style={{ display:"flex", flexDirection:"column", gap:8, paddingTop:8, minHeight:80 }}>
+                  {items.length === 0 ? (
                     <div style={{ fontSize:11, color:C.muted, textAlign:"center", padding:"16px 0" }}>empty</div>
-                  )}
-                  {jobs.map(job => (
-                    <div key={job.job_url} onClick={() => openDrawer(job)} style={{
-                      ...css.card, padding:"10px 12px", cursor:"pointer",
-                      borderLeft:`3px solid ${status.color}`,
-                      transition:"border-color 0.15s, background 0.15s",
-                    }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#1a1d26"}
-                      onMouseLeave={e => e.currentTarget.style.background = C.surface}>
-                      <div style={{ fontSize:12, color:C.text, fontWeight:600, lineHeight:1.3, marginBottom:4,
-                        overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
-                        {job.title || "Untitled"}
-                      </div>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:4 }}>
-                        <span style={{ fontSize:10, color:C.muted }}>{job.site || "—"}</span>
-                        {job.fit_score != null && (
-                          <span style={{ ...css.tag(job.fit_score >= 7 ? C.accent : C.warn), fontSize:9 }}>
-                            {job.fit_score}/10
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>
-                        {daysAgo(job.updated_at)}
-                        {job.interview_date && <span style={{ color:"#a78bfa", marginLeft:6 }}>🎯 interview</span>}
-                        {job.notes?.length > 0 && <span style={{ marginLeft:6 }}>💬{job.notes.length}</span>}
-                      </div>
-                    </div>
+                  ) : items.map(item => (
+                    item.app_stage ? (
+                      <ApplicationCard key={`app-${item.id}`} record={item} stageColor={stage.color} onClick={() => openApp(item.id)} />
+                    ) : (
+                      <PipelineCard key={`pipe-${item.id}`} record={item} stageColor={stage.color} onClick={() => openPipeline(item.id)} />
+                    )
                   ))}
                 </div>
               </div>
@@ -1875,157 +2481,23 @@ function TrackerTab({ token }) {
         </div>
       )}
 
-      {/* Drawer overlay */}
-      {drawer && (
+      {drawerId !== null ? (
         <>
-          {/* Backdrop */}
-          <div onClick={() => setDrawer(null)} style={{
-            position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:200,
-          }} />
-          {/* Panel */}
+          <div onClick={closeDrawer} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:200 }} />
           <div style={{
-            position:"fixed", top:0, right:0, bottom:0, width:440,
+            position:"fixed", top:0, right:0, bottom:0, width:480,
             background:C.surface, borderLeft:`1px solid ${C.border}`,
-            overflowY:"auto", zIndex:201, display:"flex", flexDirection:"column",
+            overflowY:"auto", zIndex:201,
             fontFamily:"'IBM Plex Mono','Courier New',monospace",
           }}>
-            {/* Header */}
-            <div style={{ padding:"20px 24px 16px", borderBottom:`1px solid ${C.border}` }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-                <div style={{ flex:1, marginRight:12 }}>
-                  <a href={drawer.job_url} target="_blank" rel="noreferrer"
-                    style={{ color:C.blue, textDecoration:"none", fontSize:14, fontWeight:700, lineHeight:1.4, display:"block" }}>
-                    {drawer.title || "Untitled"}
-                  </a>
-                  <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>
-                    {drawer.site || "—"}
-                    {drawer.location && ` · ${drawer.location}`}
-                    {drawer.fit_score != null && <span style={{ marginLeft:8 }}>★ {drawer.fit_score}/10</span>}
-                  </div>
-                </div>
-                <button onClick={() => setDrawer(null)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:18, lineHeight:1 }}>✕</button>
-              </div>
-              {/* Status pills — quick change */}
-              <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:12 }}>
-                {TRACK_STATUSES.map(s => (
-                  <button key={s.id} onClick={() => setDrawerData(d => ({ ...d, status: s.id }))} style={{
-                    padding:"3px 10px", borderRadius:12, fontSize:10, fontFamily:"inherit",
-                    cursor:"pointer", fontWeight: drawerData.status === s.id ? 700 : 400,
-                    background: drawerData.status === s.id ? s.color : "transparent",
-                    color: drawerData.status === s.id ? "#0a0b0f" : C.muted,
-                    border:`1px solid ${drawerData.status === s.id ? s.color : C.border}`,
-                    transition:"all 0.15s",
-                  }}>{s.label}</button>
-                ))}
-              </div>
-            </div>
-
-            {/* Body */}
-            <div style={{ padding:"20px 24px", display:"flex", flexDirection:"column", gap:18, flex:1 }}>
-              {/* Dates */}
-              <div>
-                <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:10 }}>Dates</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                  {[
-                    ["followup_date",  "Follow-up date",  "date"],
-                    ["interview_date", "Interview date",   "datetime-local"],
-                    ["offer_deadline", "Offer deadline",   "datetime-local"],
-                  ].map(([k, label, type]) => (
-                    <div key={k} style={{ display:"flex", alignItems:"center", gap:10 }}>
-                      <label style={{ ...css.label, marginBottom:0, width:130, flexShrink:0 }}>{label}</label>
-                      <input type={type} style={{ ...css.input, fontSize:11 }}
-                        value={drawerData[k] || ""}
-                        onChange={e => setDrawerData(d => ({ ...d, [k]: e.target.value }))} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Contact */}
-              <div>
-                <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:10 }}>Contact</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                  {[
-                    ["contact_name",   "Name"],
-                    ["contact_email",  "Email"],
-                    ["salary_offered", "Salary offered"],
-                  ].map(([k, label]) => (
-                    <div key={k} style={{ display:"flex", alignItems:"center", gap:10 }}>
-                      <label style={{ ...css.label, marginBottom:0, width:130, flexShrink:0 }}>{label}</label>
-                      <input style={{ ...css.input, fontSize:11 }}
-                        value={drawerData[k] || ""}
-                        onChange={e => setDrawerData(d => ({ ...d, [k]: e.target.value }))} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <button onClick={saveDrawer} disabled={saving} style={{ ...css.btn(), width:"100%" }}>
-                {saving ? "Saving..." : "✓ Save Changes"}
-              </button>
-
-              {/* Notes */}
-              <div>
-                <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:10 }}>Activity Log</div>
-
-                {/* Note type selector */}
-                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
-                  {NOTE_TYPES.filter(n => n.id !== "status_change").map(n => (
-                    <button key={n.id} onClick={() => setNoteType(n.id)} style={{
-                      padding:"3px 9px", borderRadius:12, fontSize:10, fontFamily:"inherit",
-                      cursor:"pointer", background: noteType === n.id ? C.accentDim : "transparent",
-                      color: noteType === n.id ? C.accent : C.muted,
-                      border:`1px solid ${noteType === n.id ? C.accent : C.border}`,
-                    }}>{n.icon} {n.label}</button>
-                  ))}
-                </div>
-                <div style={{ display:"flex", gap:8 }}>
-                  <textarea
-                    style={{ ...css.input, flex:1, height:72, resize:"vertical", fontFamily:"inherit", fontSize:11 }}
-                    placeholder="Write a note, email summary, call outcome…"
-                    value={noteText}
-                    onChange={e => setNoteText(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter" && e.metaKey) addNote(); }}
-                  />
-                  <button onClick={addNote} style={{ ...css.btn(), padding:"8px 14px", fontSize:11, alignSelf:"flex-end" }}>
-                    + Add
-                  </button>
-                </div>
-              </div>
-
-              {/* Note timeline */}
-              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                {(drawer.notes || []).length === 0 && (
-                  <div style={{ fontSize:11, color:C.muted }}>No activity yet.</div>
-                )}
-                {(drawer.notes || []).map(n => {
-                  const nt = NOTE_TYPES.find(t => t.id === n.note_type) || NOTE_TYPES[0];
-                  const isStatus = n.note_type === "status_change";
-                  return (
-                    <div key={n.id} style={{
-                      borderLeft:`2px solid ${isStatus ? C.accent : C.border}`,
-                      paddingLeft:12, paddingTop:4, paddingBottom:4, position:"relative",
-                    }}>
-                      <div style={{ fontSize:10, color:C.muted, marginBottom:2 }}>
-                        {nt.icon} {nt.label} · {new Date(n.created_at).toLocaleString()}
-                      </div>
-                      <div style={{ fontSize:12, color: isStatus ? C.accent : C.text, lineHeight:1.5 }}>
-                        {n.note}
-                      </div>
-                      {!isStatus && (
-                        <button onClick={() => removeNote(n.id)} style={{
-                          position:"absolute", top:4, right:0,
-                          background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11,
-                        }}>✕</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            {drawerType==="pipeline" ? (
+              <PipelineDrawer pid={drawerId} token={token} onClose={closeDrawer} onRefresh={load} />
+            ) : (
+              <ApplicationDrawer aid={drawerId} token={token} onClose={closeDrawer} onRefresh={load} />
+            )}
           </div>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
