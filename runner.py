@@ -48,6 +48,53 @@ class JobRunner:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
 
+    # LLM stages that consume API quota
+    _LLM_STAGES = {"score", "tailor", "cover", "all"}
+
+    @property
+    def _cooldown_path(self) -> Path:
+        return self.user_dir / ".llm_last_run"
+
+    def _read_cooldown(self) -> Optional[float]:
+        """Return Unix timestamp of last LLM run completion, or None."""
+        try:
+            return float(self._cooldown_path.read_text(encoding="utf-8").strip())
+        except Exception:
+            return None
+
+    def _write_cooldown(self) -> None:
+        try:
+            self._cooldown_path.write_text(str(time.time()), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _gemini_startup_wait(self, stages: list[str]) -> None:
+        """If last LLM run was within 75s, wait out the rolling window.
+
+        Gemini free tier = 15 RPM = 1 req / 4s. The rolling window is 60s.
+        If the previous run consumed requests in the last <75s, a new run
+        starting immediately risks a 429 on the very first call.
+        """
+        has_llm_stage = any(s in self._LLM_STAGES for s in stages)
+        if not has_llm_stage:
+            return
+        last = self._read_cooldown()
+        if last is None:
+            return
+        elapsed = time.time() - last
+        window = 75  # 60s rolling window + 15s buffer
+        if elapsed < window:
+            wait = int(window - elapsed)
+            self._append_log(
+                f"[Rate limit] Gemini cooldown: previous LLM run was {int(elapsed)}s ago. "
+                f"Waiting {wait}s to clear the 60-second rolling window..."
+            )
+            for remaining in range(wait, 0, -5):
+                if not self._running:
+                    return
+                self._append_log(f"[Rate limit] Starting in {remaining}s...")
+                time.sleep(min(5, remaining))
+
     def _make_env(self) -> dict:
         """Build subprocess env with APPLYPILOT_DIR pointing to this user's dir."""
         env = os.environ.copy()
@@ -64,7 +111,7 @@ class JobRunner:
 
         # Auto-set proactive rate-limit delay based on LLM provider.
         # Local LLMs (LLM_URL set) run at full speed.
-        # Gemini free tier: 15 RPM → 4 s/call minimum.
+        # Gemini free tier: 15 RPM → 5s/call (12 RPM, leaves 3 RPM headroom).
         # OpenAI tier-1: 500 RPM → no meaningful delay needed.
         if not env.get("APPLYPILOT_LLM_DELAY"):
             has_local  = bool(env.get("LLM_URL"))
@@ -73,7 +120,7 @@ class JobRunner:
             if has_local:
                 env["APPLYPILOT_LLM_DELAY"] = "0"
             elif has_gemini:
-                env["APPLYPILOT_LLM_DELAY"] = "4"   # 15 RPM free tier
+                env["APPLYPILOT_LLM_DELAY"] = "5"   # 12 RPM — 3 RPM headroom vs 15 RPM limit
             elif has_openai:
                 env["APPLYPILOT_LLM_DELAY"] = "0.5" # tier-1 is generous
             else:
@@ -190,6 +237,7 @@ class JobRunner:
         self.started_at = datetime.now(timezone.utc).isoformat()
 
         blocked: list[tuple[str, str]] = []
+        has_llm = any(s in self._LLM_STAGES for s in stages)
         try:
             self._append_log(f"[ApplyPilot Server] Starting pipeline: {stages}")
             self._append_log(f"[ApplyPilot Server] User dir: {self.user_dir}")
@@ -197,6 +245,11 @@ class JobRunner:
             if url_filter:
                 self._append_log(f"[ApplyPilot Server] Job filter: {len(url_filter)} URL(s)")
             self._append_log("")
+
+            # Gemini free tier: enforce rolling-window cooldown between runs
+            env_check = self._make_env()
+            if env_check.get("GEMINI_API_KEY") and not env_check.get("LLM_URL"):
+                self._gemini_startup_wait(stages)
 
             # Block non-selected jobs before running
             if url_filter:
@@ -226,6 +279,9 @@ class JobRunner:
         finally:
             # Always restore blocked jobs even if pipeline crashed
             self._unblock_non_selected(blocked)
+            # Record completion time so next run can compute cooldown
+            if has_llm:
+                self._write_cooldown()
             self._running = False
             self.current_stage = None
 
