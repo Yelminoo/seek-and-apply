@@ -162,6 +162,33 @@ class JobRunner:
         "cover":  ("cover_letter_path",    "__FILTERED__"),
     }
 
+    def _clear_sentinels(self) -> None:
+        """Remove any stale sentinel values left by a previously interrupted run.
+
+        Called at the start of every pipeline run. Guards against server
+        restarts or kill-9 that skip the finally-block cleanup in _unblock_non_selected,
+        which would leave jobs permanently stuck with non-NULL sentinel values and
+        silently skipped by score/tailor/cover on all future runs.
+        """
+        db_path = self.user_dir / "applypilot.db"
+        if not db_path.exists():
+            return
+        conn = sqlite3.connect(str(db_path))
+        cleared = 0
+        try:
+            cur = conn.execute("UPDATE jobs SET fit_score = NULL WHERE fit_score = -9999")
+            cleared += cur.rowcount
+            for col in ("full_description", "tailored_resume_path", "cover_letter_path"):
+                cur = conn.execute(f"UPDATE jobs SET {col} = NULL WHERE {col} = '__FILTERED__'")
+                cleared += cur.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if cleared:
+            self._append_log(
+                f"[ApplyPilot Server] Cleared {cleared} stale filter sentinel(s) from a previous interrupted run."
+            )
+
     def _block_non_selected(self, stages: list[str], url_filter: list[str]) -> list[tuple[str, str]]:
         """Set sentinel values on non-selected jobs so the CLI skips them.
         Returns (column, url) pairs that must be restored afterward."""
@@ -239,6 +266,9 @@ class JobRunner:
         blocked: list[tuple[str, str]] = []
         has_llm = any(s in self._LLM_STAGES for s in stages)
         try:
+            # Clean up any sentinels left by a previously interrupted URL-filtered run
+            self._clear_sentinels()
+
             self._append_log(f"[ApplyPilot Server] Starting pipeline: {stages}")
             self._append_log(f"[ApplyPilot Server] User dir: {self.user_dir}")
             self._append_log(f"[ApplyPilot Server] Min score: {min_score} | Workers: {workers}")
