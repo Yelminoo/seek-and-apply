@@ -109,6 +109,7 @@ class PipelineRunRequest(BaseModel):
     min_score: int = 7
     workers: int = 1
     validation: str = "normal"
+    url_filter: list[str] = []
 
 
 # ---------------------------------------------------------------------------

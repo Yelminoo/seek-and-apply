@@ -106,32 +106,108 @@ class JobRunner:
             self._append_log(f"[ERROR] {e}")
             return 1
 
+    # Columns each stage uses to find unprocessed jobs.
+    # A sentinel value here blocks that job from being picked up.
+    _STAGE_FILTER: dict = {
+        "score":  ("fit_score",           -9999),
+        "enrich": ("full_description",     "__FILTERED__"),
+        "tailor": ("tailored_resume_path", "__FILTERED__"),
+        "cover":  ("cover_letter_path",    "__FILTERED__"),
+    }
+
+    def _block_non_selected(self, stages: list[str], url_filter: list[str]) -> list[tuple[str, str]]:
+        """Set sentinel values on non-selected jobs so the CLI skips them.
+        Returns (column, url) pairs that must be restored afterward."""
+        db_path = self.user_dir / "applypilot.db"
+        if not db_path.exists() or not url_filter:
+            return []
+
+        effective = list(self._STAGE_FILTER) if "all" in stages else [
+            s for s in stages if s in self._STAGE_FILTER
+        ]
+        if not effective:
+            return []
+
+        conn = sqlite3.connect(str(db_path))
+        blocked: list[tuple[str, str]] = []
+        ph = ",".join("?" * len(url_filter))
+        try:
+            for stage in effective:
+                col, sentinel = self._STAGE_FILTER[stage]
+                rows = conn.execute(
+                    f"SELECT url FROM jobs WHERE {col} IS NULL AND url NOT IN ({ph})",
+                    url_filter,
+                ).fetchall()
+                urls = [r[0] for r in rows]
+                if urls:
+                    uh = ",".join("?" * len(urls))
+                    conn.execute(
+                        f"UPDATE jobs SET {col} = ? WHERE url IN ({uh})",
+                        [sentinel] + urls,
+                    )
+                    blocked.extend((col, u) for u in urls)
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._append_log(
+            f"[ApplyPilot Server] URL filter active: {len(url_filter)} selected, "
+            f"{len(blocked)} non-selected jobs temporarily blocked."
+        )
+        return blocked
+
+    def _unblock_non_selected(self, blocked: list[tuple[str, str]]) -> None:
+        """Restore sentinel values back to NULL."""
+        if not blocked:
+            return
+        db_path = self.user_dir / "applypilot.db"
+        if not db_path.exists():
+            return
+        conn = sqlite3.connect(str(db_path))
+        by_col: dict[str, list[str]] = {}
+        for col, url in blocked:
+            by_col.setdefault(col, []).append(url)
+        try:
+            for col, urls in by_col.items():
+                ph = ",".join("?" * len(urls))
+                conn.execute(f"UPDATE jobs SET {col} = NULL WHERE url IN ({ph})", urls)
+            conn.commit()
+        finally:
+            conn.close()
+        self._append_log("[ApplyPilot Server] URL filter restored.")
+
     def run_pipeline(
         self,
         stages: list[str],
         min_score: int = 7,
         workers: int = 1,
         validation: str = "normal",
+        url_filter: list[str] = None,
     ):
         """Run pipeline stages in a background thread."""
         self._running = True
         self._logs = []
         self.started_at = datetime.now(timezone.utc).isoformat()
 
+        blocked: list[tuple[str, str]] = []
         try:
             self._append_log(f"[ApplyPilot Server] Starting pipeline: {stages}")
             self._append_log(f"[ApplyPilot Server] User dir: {self.user_dir}")
             self._append_log(f"[ApplyPilot Server] Min score: {min_score} | Workers: {workers}")
+            if url_filter:
+                self._append_log(f"[ApplyPilot Server] Job filter: {len(url_filter)} URL(s)")
             self._append_log("")
 
-            # Build the applypilot run command
+            # Block non-selected jobs before running
+            if url_filter:
+                blocked = self._block_non_selected(stages, url_filter)
+
             cmd = [
                 "applypilot", "run",
                 "--min-score", str(min_score),
                 "--workers", str(workers),
                 "--validation", validation,
             ]
-            # Add stage args (applypilot run [stages...])
             if "all" not in stages:
                 cmd.extend(stages)
 
@@ -148,6 +224,8 @@ class JobRunner:
         except Exception as e:
             self._append_log(f"[ApplyPilot Server] Unexpected error: {e}")
         finally:
+            # Always restore blocked jobs even if pipeline crashed
+            self._unblock_non_selected(blocked)
             self._running = False
             self.current_stage = None
 

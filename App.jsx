@@ -963,11 +963,12 @@ const QUICK_RUNS = [
   { label:"Score → PDF",      stages:["score","tailor","cover","pdf"],  desc:"Same as Re-run AI stages" },
 ];
 
-function PipelineTab({ token, initialStages }) {
+function PipelineTab({ token, initialStages, initialUrls }) {
   const [selectedStages, setSelectedStages] = useState(initialStages || ["all"]);
+  const [urlFilter, setUrlFilter]           = useState(initialUrls || []);
 
-  // Sync when parent navigates here with a stage pre-selected
   useEffect(() => { if (initialStages) setSelectedStages(initialStages); }, [initialStages?.join(",")]);
+  useEffect(() => { setUrlFilter(initialUrls || []); }, [initialUrls?.join(",")]);
   const [minScore, setMinScore]   = useState(7);
   const [workers, setWorkers]     = useState(1);
   const [validation, setValidation] = useState("normal");
@@ -1016,7 +1017,7 @@ function PipelineTab({ token, initialStages }) {
   const run = async (stages = selectedStages) => {
     setError(""); setLogs([]);
     try {
-      await api("POST", "/pipeline/run", { stages, min_score: minScore, workers, validation }, token);
+      await api("POST", "/pipeline/run", { stages, min_score: minScore, workers, validation, url_filter: urlFilter.length > 0 ? urlFilter : undefined }, token);
       fetchStatus();
       streamLogs(token);
     } catch (e) { setError(e.message); }
@@ -1196,9 +1197,21 @@ function PipelineTab({ token, initialStages }) {
 
           {error && <div style={{ ...css.card, borderColor:C.danger+"55", color:C.danger, fontSize:12 }}>⚠ {error}</div>}
 
+          {urlFilter.length > 0 ? (
+            <div style={{
+              ...css.card, borderColor:C.blue+"55", color:C.blue,
+              padding:"8px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11,
+            }}>
+              <span>▸ Scoped to {urlFilter.length} selected job{urlFilter.length > 1 ? "s" : ""} from Jobs tab</span>
+              <button onClick={() => setUrlFilter([])} style={{
+                background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11, fontFamily:"inherit",
+              }}>✕ Run all</button>
+            </div>
+          ) : null}
+
           <div style={{ display:"flex", gap:10 }}>
             <button onClick={() => run()} disabled={running} style={{ ...css.btn(), flex:1 }}>
-              {running ? "◉ Running..." : `▶ Run ${allSelected ? "All Stages" : selectedStages.join(" + ")}`}
+              {running ? "◉ Running..." : `▶ Run ${allSelected ? "All Stages" : selectedStages.join(" + ")}${urlFilter.length > 0 ? ` (${urlFilter.length} jobs)` : ""}`}
             </button>
             {running && <button onClick={stop} style={css.btnDanger}>■ Stop</button>}
           </div>
@@ -1569,7 +1582,7 @@ function JobsTab({ token, onGoToPipeline }) {
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:11, color:C.muted }}>Run next stage:</span>
               {nextStages.map(s => (
-                <button key={s} onClick={() => onGoToPipeline && onGoToPipeline([s])}
+                <button key={s} onClick={() => onGoToPipeline && onGoToPipeline([s], [...selected])}
                   style={{ ...css.btn(), padding:"5px 12px", fontSize:11 }}>
                   ▶ {s}
                 </button>
@@ -2659,6 +2672,7 @@ export default function App() {
   const [tab, setTab]                   = useState("dashboard");
   const [showTour, setShowTour]         = useState(false);
   const [pipelineStages, setPipelineStages] = useState(["all"]);
+  const [pipelineUrls, setPipelineUrls]     = useState([]);
 
   useEffect(() => {
     if (authed && !localStorage.getItem("ap_tour_done")) setShowTour(true);
@@ -2667,14 +2681,14 @@ export default function App() {
   const closeTour = () => { localStorage.setItem("ap_tour_done","1"); setShowTour(false); };
   const replayTour = () => setShowTour(true);
 
-  const goToPipeline = (stages) => { setPipelineStages(stages); setTab("pipeline"); };
+  const goToPipeline = (stages, urls = []) => { setPipelineStages(stages); setPipelineUrls(urls); setTab("pipeline"); };
 
   if (!authed) return <AuthScreen onAuth={login} />;
 
   const CONTENT = {
     dashboard: <DashboardTab token={token} />,
     setup:     <SetupTab token={token} />,
-    pipeline:  <PipelineTab token={token} initialStages={pipelineStages} />,
+    pipeline:  <PipelineTab token={token} initialStages={pipelineStages} initialUrls={pipelineUrls} />,
     jobs:      <JobsTab token={token} onGoToPipeline={goToPipeline} />,
     tracker:   <TrackerTab token={token} />,
   };

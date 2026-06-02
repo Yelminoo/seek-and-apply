@@ -287,7 +287,7 @@ def run_pipeline(
 
     runner = JobRunner(user_id=uid, user_dir=user_dir)
     _runners[uid] = runner
-    background_tasks.add_task(runner.run_pipeline, req.stages, req.min_score, req.workers, req.validation)
+    background_tasks.add_task(runner.run_pipeline, req.stages, req.min_score, req.workers, req.validation, req.url_filter or None)
 
     return {"ok": True, "job_id": runner.job_id}
 
