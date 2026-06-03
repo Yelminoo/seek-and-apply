@@ -1408,8 +1408,9 @@ function JobsKanban({ jobs, loading, token, onRefresh }) {
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                       <span style={{ fontSize:10, color:C.muted }}>{job.site || "—"}</span>
                       {job.fit_score != null && (
-                        <span style={{ ...css.tag(job.fit_score >= 7 ? C.accent : job.fit_score >= 5 ? C.warn : C.danger), fontSize:9 }}>
-                          {job.fit_score}/10
+                        <span style={{ ...css.tag(job.fit_score === 0 ? C.muted : job.fit_score >= 7 ? C.accent : job.fit_score >= 5 ? C.warn : C.danger), fontSize:9 }}
+                          title={job.fit_score === 0 ? "Score failed (API error) — will retry on next score run" : undefined}>
+                          {job.fit_score === 0 ? "⚠ err" : `${job.fit_score}/10`}
                         </span>
                       )}
                     </div>
@@ -1652,9 +1653,12 @@ function JobsTab({ token, onGoToPipeline }) {
                     <td style={{ padding:"9px 14px", color:C.muted, fontSize:11 }}>{job.location || "—"}</td>
                     <td style={{ padding:"9px 14px" }}><span style={css.tag(C.blue)}>{job.site || "—"}</span></td>
                     <td style={{ padding:"9px 14px" }}>
-                      {job.fit_score != null
-                        ? <span style={css.tag(job.fit_score >= 7 ? C.accent : job.fit_score >= 5 ? C.warn : C.danger)}>{job.fit_score}/10</span>
-                        : <span style={{ color:C.border }}>—</span>}
+                      {job.fit_score == null
+                        ? <span style={{ color:C.border }}>—</span>
+                        : job.fit_score === 0
+                          ? <span style={css.tag(C.muted)} title="Score failed (API error) — will be re-scored on next run">⚠ err</span>
+                          : <span style={css.tag(job.fit_score >= 7 ? C.accent : job.fit_score >= 5 ? C.warn : C.danger)}>{job.fit_score}/10</span>
+                      }
                     </td>
                     <td style={{ padding:"9px 14px" }}>
                       {job.apply_status ? <span style={css.tag(job.apply_status === "applied" ? C.accent : C.warn)}>{job.apply_status}</span> : <span style={{ color:C.border }}>—</span>}

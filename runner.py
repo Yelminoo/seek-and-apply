@@ -163,30 +163,45 @@ class JobRunner:
     }
 
     def _clear_sentinels(self) -> None:
-        """Remove any stale sentinel values left by a previously interrupted run.
+        """Remove stale sentinels and reset LLM-error scores so they re-queue.
 
-        Called at the start of every pipeline run. Guards against server
-        restarts or kill-9 that skip the finally-block cleanup in _unblock_non_selected,
-        which would leave jobs permanently stuck with non-NULL sentinel values and
-        silently skipped by score/tailor/cover on all future runs.
+        Called at the start of every pipeline run.
+        - Sentinel values (-9999 / __FILTERED__) are left by interrupted
+          URL-filtered runs when the server is killed before the finally block.
+        - fit_score=0 with an LLM error in score_reasoning means the API call
+          failed (e.g. 429). applypilot stores 0 instead of NULL, which
+          permanently prevents re-scoring and re-tailoring. Reset to NULL so
+          the score stage picks them up again.
         """
         db_path = self.user_dir / "applypilot.db"
         if not db_path.exists():
             return
         conn = sqlite3.connect(str(db_path))
         cleared = 0
+        failed_reset = 0
         try:
             cur = conn.execute("UPDATE jobs SET fit_score = NULL WHERE fit_score = -9999")
             cleared += cur.rowcount
             for col in ("full_description", "tailored_resume_path", "cover_letter_path"):
                 cur = conn.execute(f"UPDATE jobs SET {col} = NULL WHERE {col} = '__FILTERED__'")
                 cleared += cur.rowcount
+            # Reset jobs where scoring failed with an LLM error (API 429, timeout, etc.)
+            # score_reasoning stores the raw error string in these cases
+            cur = conn.execute(
+                "UPDATE jobs SET fit_score = NULL, score_reasoning = NULL "
+                "WHERE fit_score = 0 AND score_reasoning LIKE '%LLM error%'"
+            )
+            failed_reset = cur.rowcount
             conn.commit()
         finally:
             conn.close()
         if cleared:
             self._append_log(
                 f"[ApplyPilot Server] Cleared {cleared} stale filter sentinel(s) from a previous interrupted run."
+            )
+        if failed_reset:
+            self._append_log(
+                f"[ApplyPilot Server] Reset {failed_reset} job(s) with score=0 (LLM API error) → will be re-scored."
             )
 
     def _log_db_summary(self, stages: list[str], min_score: int) -> None:
