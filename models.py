@@ -109,6 +109,15 @@ class PipelineRunRequest(BaseModel):
     min_score: int = 7
     workers: int = 1
     validation: str = "normal"
+
+class ApplyRunRequest(BaseModel):
+    limit: int = 5
+    min_score: int = 7
+    workers: int = 1
+    model: str = "sonnet"
+    dry_run: bool = False
+    headless: bool = True
+    url_filter: list[str] = []   # if set, only apply to these specific URLs
     url_filter: list[str] = []
 
 

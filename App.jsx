@@ -206,6 +206,7 @@ const TABS = [
   { id: "setup",     label: "Setup",     icon: "⚙" },
   { id: "pipeline",  label: "Pipeline",  icon: "▶" },
   { id: "jobs",      label: "Jobs",      icon: "◉" },
+  { id: "apply",     label: "Auto Apply",icon: "⚡" },
   { id: "tracker",   label: "Tracker",   icon: "⬡" },
 ];
 
@@ -958,7 +959,7 @@ function LlmRateInfo({ token }) {
 
 // ─── Pipeline tab ─────────────────────────────────────────────────────────────
 
-const STAGES = ["discover", "enrich", "score", "tailor", "cover", "pdf"];
+const STAGES = ["discover", "enrich", "score", "tailor", "cover", "pdf", "apply"];
 const STAGE_DESC = {
   discover: "Scrapes LinkedIn & Indeed using your search config",
   enrich:   "Fetches full job descriptions + apply URLs",
@@ -966,8 +967,9 @@ const STAGE_DESC = {
   tailor:   "Rewrites resume per job (only jobs ≥ min score)",
   cover:    "Generates a targeted cover letter per job",
   pdf:      "Converts tailored resumes & cover letters to PDF",
+  apply:    "Auto-submits applications via Playwright browser automation (requires: playwright install chromium)",
 };
-const STAGE_ICON = { discover:"🔍", enrich:"📄", score:"⭐", tailor:"✏️", cover:"📝", pdf:"📦" };
+const STAGE_ICON = { discover:"🔍", enrich:"📄", score:"⭐", tailor:"✏️", cover:"📝", pdf:"📦", apply:"🚀" };
 
 const QUICK_RUNS = [
   { label:"Full pipeline",    stages:["all"],                           desc:"Discover → … → PDF" },
@@ -1274,7 +1276,8 @@ const NEXT_STAGE = {
   enriched:   ["score"],
   scored:     ["tailor","cover","pdf"],
   tailored:   ["cover","pdf"],
-  ready:      ["pdf"],
+  ready:      ["pdf","apply"],
+  applied:    [],
 };
 
 const KANBAN_COLS = [
@@ -1441,7 +1444,7 @@ function JobsKanban({ jobs, loading, token, onRefresh }) {
   );
 }
 
-function JobsTab({ token, onGoToPipeline }) {
+function JobsTab({ token, onGoToPipeline, onGoToApply }) {
   const [view, setView]         = useState("list");  // "list" | "kanban"
   const [allJobs, setAllJobs]   = useState([]);
   const [kanbanJobs, setKanbanJobs] = useState([]);
@@ -1454,6 +1457,7 @@ function JobsTab({ token, onGoToPipeline }) {
   const [filterScore, setFilterScore] = useState("");
   const [page, setPage]         = useState(0);
   const [selected, setSelected] = useState(new Set());
+  const [applyForm, setApplyForm] = useState({ show:false, channel:"portal", resumeChoice:"tailored", note:"" });
 
   const loadKanban = async () => {
     setKanbanLoading(true);
@@ -1587,34 +1591,167 @@ function JobsTab({ token, onGoToPipeline }) {
 
       {/* Selection action bar */}
       {selected.size > 0 && (
-        <div style={{ ...css.card, marginBottom:12, padding:"10px 16px", borderColor:C.accent+"44", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:12, color:C.accent, fontWeight:700 }}>{selected.size} selected</span>
-          <button onClick={openSelected} style={{ ...css.btn("outline"), padding:"5px 12px", fontSize:11 }}>
-            ↗ Open in tabs
-          </button>
-          {nextStages.length > 0 && (
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ fontSize:11, color:C.muted }}>Run next stage:</span>
-              {nextStages.map(s => (
-                <button key={s} onClick={() => onGoToPipeline && onGoToPipeline([s], [...selected])}
-                  style={{ ...css.btn(), padding:"5px 12px", fontSize:11 }}>
-                  ▶ {s}
+        <div style={{ ...css.card, marginBottom:12, borderColor:C.accent+"44" }}>
+          {/* Action row */}
+          <div style={{ padding:"10px 16px", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, color:C.accent, fontWeight:700 }}>{selected.size} selected</span>
+            <button onClick={openSelected} style={{ ...css.btn("outline"), padding:"5px 12px", fontSize:11 }}>
+              ↗ Open in tabs
+            </button>
+            {nextStages.length > 0 && (
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:11, color:C.muted }}>Run next stage:</span>
+                {nextStages.filter(s => s !== "apply").map(s => (
+                  <button key={s} onClick={() => onGoToPipeline && onGoToPipeline([s], [...selected])}
+                    style={{ ...css.btn(), padding:"5px 12px", fontSize:11 }}>
+                    ▶ {s}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={async () => {
+                const urls = [...selected];
+                const jobs = allJobs.filter(j => selected.has(j.url));
+                const notTailored = jobs.filter(j => !j.tailored_resume_path);
+                if (notTailored.length > 0) {
+                  const cont = confirm(
+                    `${notTailored.length} of ${urls.length} selected jobs don't have a tailored resume yet.\n\n` +
+                    `Auto-apply will skip them. Run the pipeline (score → tailor → cover → pdf) first for best results.\n\n` +
+                    `Continue anyway?`
+                  );
+                  if (!cont) return;
+                }
+                try {
+                  await api("POST", "/apply/run", {
+                    limit: urls.length, url_filter: urls,
+                    model: "sonnet", dry_run: false, headless: true,
+                    min_score: 1, workers: 1,
+                  }, token);
+                  if (onGoToApply) onGoToApply();
+                } catch (e) { alert("Auto-apply failed: " + e.message); }
+              }}
+              style={{
+                background:"transparent", border:`1px solid #fb923c`,
+                borderRadius:6, color:"#fb923c", cursor:"pointer",
+                fontSize:11, fontFamily:"inherit", padding:"5px 12px", fontWeight:700,
+              }}>
+              ⚡ Auto Apply {selected.size}
+            </button>
+            <button
+              onClick={() => setApplyForm(f => ({ ...f, show:!f.show }))}
+              style={{ ...css.btn(applyForm.show ? "primary" : "outline"), padding:"5px 12px", fontSize:11, borderColor:C.accent }}>
+              ✓ Mark Applied
+            </button>
+            <button onClick={async () => {
+              if (!confirm(`Delete ${selected.size} job(s)? This cannot be undone.`)) return;
+              await api("POST", "/jobs/delete", { urls: [...selected] }, token);
+              setSelected(new Set()); load(stage); loadCounts();
+            }} style={{ background:"transparent", border:`1px solid ${C.danger}`, borderRadius:6, color:C.danger, cursor:"pointer", fontSize:11, fontFamily:"inherit", padding:"5px 12px" }}>
+              🗑 Delete {selected.size}
+            </button>
+            <button onClick={() => { setSelected(new Set()); setApplyForm(f => ({ ...f, show:false })); }}
+              style={{ marginLeft:"auto", background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11, fontFamily:"inherit" }}>
+              ✕ Deselect all
+            </button>
+          </div>
+
+          {/* Apply form (expanded inline) */}
+          {applyForm.show && (
+            <div style={{ padding:"14px 16px", borderTop:`1px solid ${C.border}`, display:"flex", flexDirection:"column", gap:12 }}>
+              <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.08em", textTransform:"uppercase" }}>
+                Mark {selected.size} job{selected.size > 1 ? "s" : ""} as applied
+              </div>
+
+              {/* Channel */}
+              <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                <span style={{ fontSize:11, color:C.muted, width:120, flexShrink:0 }}>Applied via</span>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                  {["linkedin","portal","referral","email"].map(ch => (
+                    <button key={ch} onClick={() => setApplyForm(f => ({ ...f, channel:ch }))} style={{
+                      padding:"4px 12px", borderRadius:6, fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                      background:applyForm.channel===ch ? C.accentDim : "transparent",
+                      color:applyForm.channel===ch ? C.accent : C.muted,
+                      border:`1px solid ${applyForm.channel===ch ? C.accent : C.border}`,
+                    }}>{ch}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Resume version */}
+              <div style={{ display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap" }}>
+                <span style={{ fontSize:11, color:C.muted, width:120, flexShrink:0, paddingTop:4 }}>Resume used</span>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {[
+                    { id:"tailored", label:"Tailored resume (AI-generated for this job)",   note:"📄 in tailored_resumes/" },
+                    { id:"original", label:"Original uploaded resume",                       note:"📁 resume.pdf / resume.txt" },
+                    { id:"custom",   label:"Other / custom version",                         note:"Enter version name below" },
+                  ].map(opt => (
+                    <label key={opt.id} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
+                      <input type="radio" name="resumeChoice" value={opt.id}
+                        checked={applyForm.resumeChoice === opt.id}
+                        onChange={() => setApplyForm(f => ({ ...f, resumeChoice:opt.id }))}
+                        style={{ accentColor:C.accent }} />
+                      <span style={{ color:C.text }}>{opt.label}</span>
+                      <span style={{ color:C.muted, fontSize:10 }}>{opt.note}</span>
+                    </label>
+                  ))}
+                  {applyForm.resumeChoice === "custom" && (
+                    <input style={{ ...css.input, fontSize:11, marginTop:4 }}
+                      placeholder="e.g. v3-senior-backend, linkedin-optimised …"
+                      value={applyForm.note}
+                      onChange={e => setApplyForm(f => ({ ...f, note:e.target.value }))} />
+                  )}
+                </div>
+              </div>
+
+              {/* Download shortcuts */}
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <span style={{ fontSize:11, color:C.muted }}>Quick download:</span>
+                {[...selected].slice(0,3).map(url => {
+                  const job = allJobs.find(j => j.url === url);
+                  return job?.tailored_resume_path ? (
+                    <button key={url} onClick={() => downloadFile(`/jobs/${encodeURIComponent(url)}/resume`, token).catch(() => {})}
+                      style={{ ...css.btn("outline"), padding:"3px 8px", fontSize:10 }}>
+                      📄 {job.title ? job.title.split(" ").slice(0,3).join(" ") : "Resume"}
+                    </button>
+                  ) : null;
+                })}
+                {[...selected].slice(0,3).map(url => {
+                  const job = allJobs.find(j => j.url === url);
+                  return job?.cover_letter_path ? (
+                    <button key={url+"-cl"} onClick={() => downloadFile(`/jobs/${encodeURIComponent(url)}/cover`, token).catch(() => {})}
+                      style={{ ...css.btn("outline"), padding:"3px 8px", fontSize:10 }}>
+                      ✉ {job.title ? job.title.split(" ").slice(0,3).join(" ") : "Cover"}
+                    </button>
+                  ) : null;
+                })}
+              </div>
+
+              {/* Submit */}
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={async () => {
+                  const resumeVersion = applyForm.resumeChoice === "custom"
+                    ? (applyForm.note.trim() || "custom")
+                    : applyForm.resumeChoice;
+                  await api("POST", "/jobs/mark-applied", {
+                    urls: [...selected],
+                    channel: applyForm.channel,
+                    resume_version: resumeVersion,
+                  }, token);
+                  setSelected(new Set());
+                  setApplyForm(f => ({ ...f, show:false }));
+                  load(stage); loadCounts();
+                }} style={{ ...css.btn(), padding:"7px 20px", fontSize:12 }}>
+                  ✓ Confirm — Mark {selected.size} as Applied
                 </button>
-              ))}
+                <button onClick={() => setApplyForm(f => ({ ...f, show:false }))}
+                  style={{ ...css.btn("outline"), padding:"7px 14px", fontSize:12 }}>
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
-          <button onClick={async () => {
-            if (!confirm(`Delete ${selected.size} job(s)? This cannot be undone.`)) return;
-            await api("POST", "/jobs/delete", { urls: [...selected] }, token);
-            setSelected(new Set());
-            load(stage);
-            loadCounts();
-          }} style={{ background:"transparent", border:`1px solid ${C.danger}`, borderRadius:6, color:C.danger, cursor:"pointer", fontSize:11, fontFamily:"inherit", padding:"5px 12px" }}>
-            🗑 Delete {selected.size}
-          </button>
-          <button onClick={() => setSelected(new Set())} style={{ marginLeft:"auto", background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11, fontFamily:"inherit" }}>
-            ✕ Deselect all
-          </button>
         </div>
       )}
 
@@ -1746,6 +1883,245 @@ function JobsTab({ token, onGoToPipeline }) {
         </div>
       )}
       </>}
+    </div>
+  );
+}
+
+// ─── Auto Apply tab ──────────────────────────────────────────────────────────
+
+function ApplyTab({ token }) {
+  const [prereqs, setPrereqs]   = useState(null);
+  const [logs, setLogs]         = useState([]);
+  const [running, setRunning]   = useState(false);
+  const [error, setError]       = useState("");
+  const [limit, setLimit]       = useState(5);
+  const [minScore, setMinScore] = useState(5);  // default 5 — lower than pipeline min so tailored jobs qualify
+  const [model, setModel]       = useState("sonnet");
+  const [dryRun, setDryRun]     = useState(false);
+  const [headless, setHeadless] = useState(true);
+  const logsEndRef = useRef(null);
+
+  const loadPrereqs = () =>
+    api("GET", `/apply/status?min_score=${minScore}`, null, token).then(setPrereqs).catch(() => {});
+
+  useEffect(() => { loadPrereqs(); }, [token, minScore]);
+  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [logs]);
+
+  // Poll status while running
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(async () => {
+      const s = await api("GET", "/pipeline/status", null, token).catch(() => null);
+      if (s && !s.running) { setRunning(false); loadPrereqs(); }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [running, token]);
+
+  const streamLogs = async () => {
+    const res = await fetch(`${API}/pipeline/logs`, { headers: authHeaders(token) });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.replace(/^data: /, "");
+        if (line === "[DONE]") {
+          setRunning(false);
+          loadPrereqs();
+          // Sync applied jobs into Tracker automatically
+          api("POST", "/tracker/sync", null, token).catch(() => {});
+          return;
+        }
+        if (line) setLogs(l => [...l, line]);
+      }
+    }
+  };
+
+  const run = async () => {
+    setError(""); setLogs([]);
+    try {
+      await api("POST", "/apply/run", { limit, min_score: minScore, model, dry_run: dryRun, headless }, token);
+      setRunning(true);
+      streamLogs();
+    } catch (e) { setError(e.message); }
+  };
+
+  const stop = async () => {
+    await api("POST", "/pipeline/stop", null, token).catch(() => {});
+    setRunning(false);
+  };
+
+  const Prereq = ({ ok, label, detail }) => (
+    <div style={{ display:"flex", alignItems:"flex-start", gap:10, marginBottom:10 }}>
+      <span style={{ fontSize:14, color: ok ? C.accent : C.danger, flexShrink:0 }}>{ok ? "✓" : "✗"}</span>
+      <div>
+        <div style={{ fontSize:12, color: ok ? C.text : C.danger }}>{label}</div>
+        {detail && <div style={{ fontSize:11, color:C.muted }}>{detail}</div>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <SectionTitle>Auto Apply</SectionTitle>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+        {/* Left: prereqs + config */}
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+
+          {/* Prerequisites */}
+          <div style={css.card}>
+            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:14 }}>
+              Prerequisites
+            </div>
+            {!prereqs ? <Loader /> : <>
+              <Prereq ok={prereqs.claude_ok} label="Claude CLI installed"
+                detail={prereqs.claude_ok ? prereqs.claude_path : "Run: npm install -g @anthropic-ai/claude-code"} />
+              <Prereq ok={prereqs.chrome_ok} label="Chrome installed"
+                detail={prereqs.chrome_ok ? "Found at default path" : "Install Google Chrome"} />
+              <Prereq
+                ok={prereqs.ready > 0 || prereqs.ready_any_score > 0}
+                label={`Jobs ready at score ≥ ${minScore}: ${prereqs.ready}${prereqs.ready_any_score > prereqs.ready ? ` (${prereqs.ready_any_score} at any score)` : ""}`}
+                detail={`${prereqs.tailored} tailored · ${prereqs.applied} applied · ${prereqs.failed} failed${prereqs.max_score != null ? ` · scores ${prereqs.min_available_score}–${prereqs.max_score}` : ""}`}
+              />
+              {prereqs.threshold_warning && (
+                <div style={{ background:C.warn+"18", border:`1px solid ${C.warn}44`, borderRadius:6, padding:"8px 12px", marginTop:4, fontSize:11, color:C.warn }}>
+                  ⚠ Your tailored jobs have scores {prereqs.min_available_score}–{prereqs.max_score} but min score is set to {minScore}. Lower min score to {prereqs.min_available_score} to include them.
+                </div>
+              )}
+              {prereqs.ready === 0 && prereqs.ready_any_score === 0 && prereqs.tailored === 0 && (
+                <div style={{ fontSize:11, color:C.warn, marginTop:4 }}>
+                  ↗ No tailored jobs yet — run score → tailor → pdf in the Pipeline tab first.
+                </div>
+              )}
+            </>}
+          </div>
+
+          {/* How it works */}
+          <div style={{ ...css.card, borderColor:C.accent+"22", borderLeft:`3px solid ${C.accent}` }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.accent, marginBottom:8 }}>How auto-apply works</div>
+            <div style={{ fontSize:11, color:C.muted, lineHeight:1.8 }}>
+              For each job, Claude opens Chrome, navigates to the application page, reads your tailored resume + profile, fills every field, uploads the resume PDF, and clicks Submit.<br/><br/>
+              Results per job: <span style={{ color:C.accent }}>APPLIED</span> · <span style={{ color:C.warn }}>CAPTCHA</span> · <span style={{ color:C.danger }}>FAILED</span> · <span style={{ color:C.muted }}>EXPIRED</span>
+            </div>
+          </div>
+
+          {/* Settings */}
+          <div style={css.card}>
+            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:14 }}>Settings</div>
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              <div>
+                <label style={css.label}>Max applications per run</label>
+                <input style={css.input} type="number" min={1} max={50} value={limit} onChange={e => setLimit(+e.target.value)} />
+              </div>
+              <div>
+                <label style={css.label}>Min fit score</label>
+                <input style={css.input} type="number" min={1} max={10} value={minScore} onChange={e => setMinScore(+e.target.value)} />
+              </div>
+              <div>
+                <label style={css.label}>Claude model</label>
+                <select style={css.input} value={model} onChange={e => setModel(e.target.value)}>
+                  <option value="haiku">Haiku 4.5 — fastest, cheapest</option>
+                  <option value="sonnet">Sonnet 4.6 — recommended</option>
+                  <option value="opus">Opus 4.8 — most capable</option>
+                </select>
+              </div>
+              <div style={{ display:"flex", gap:20 }}>
+                <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
+                  <input type="checkbox" checked={dryRun} onChange={e => setDryRun(e.target.checked)} />
+                  <span style={{ color: dryRun ? C.warn : C.muted }}>
+                    Dry run <span style={{ fontSize:10 }}>(fills forms, doesn't submit)</span>
+                  </span>
+                </label>
+                <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
+                  <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} />
+                  <span style={{ color:C.muted }}>Headless Chrome</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {error && <div style={{ ...css.card, borderColor:C.danger+"55", color:C.danger, fontSize:12 }}>⚠ {error}</div>}
+
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={run} disabled={running || !prereqs?.can_run}
+              style={{ ...css.btn(), flex:1, opacity: (!prereqs?.can_run && !running) ? 0.5 : 1 }}>
+              {running ? "⚡ Applying..." : dryRun ? "▶ Dry Run" : "⚡ Start Auto Apply"}
+            </button>
+            {running && <button onClick={stop} style={css.btnDanger}>■ Stop</button>}
+          </div>
+          {!prereqs?.can_run && !running && prereqs && (
+            <div style={{ fontSize:11, color:C.muted }}>
+              {!prereqs.claude_ok ? "Install Claude CLI first." :
+               !prereqs.chrome_ok ? "Install Chrome first." :
+               "No ready jobs — complete the pipeline (tailor + pdf) first."}
+            </div>
+          )}
+        </div>
+
+        {/* Right: live logs */}
+        <div style={{ ...css.card, display:"flex", flexDirection:"column" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>
+              Agent Log
+              {running && <span style={{ color:C.accent, marginLeft:10 }}>● LIVE</span>}
+            </div>
+            <button onClick={() => setLogs([])} style={{ ...css.btn("outline"), padding:"3px 10px", fontSize:10 }}>Clear</button>
+          </div>
+          <div style={{
+            flex:1, minHeight:480, maxHeight:600, overflowY:"auto",
+            background:"#08090d", borderRadius:6, padding:12, fontSize:11, lineHeight:1.7,
+          }}>
+            {logs.length === 0 && (
+              <div style={{ color:C.muted }}>
+                Agent logs appear here when auto-apply runs.<br/><br/>
+                Each job takes ~2–5 minutes. Claude will fill the form, upload your resume, and return a result code.
+              </div>
+            )}
+            {logs.map((line, i) => (
+              <div key={i} style={{
+                color: line.includes("RESULT:APPLIED") || line.includes("✓  APPLIED") ? C.accent
+                     : line.includes("Queue empty") || line.includes("NO CHANGE") ? C.warn
+                     : line.includes("ERROR") || line.includes("FAILED") || line.includes("✗") ? C.danger
+                     : line.includes("CAPTCHA") || line.includes("WARN") || line.includes("⚠") ? C.warn
+                     : line.includes("EXPIRED") || line.includes("SKIPPED") ? C.muted
+                     : line.includes("RESULT:") || line.includes("Result summary") ? C.blue
+                     : line.startsWith("[ApplyPilot") ? C.blue
+                     : "#94a3b8",
+                fontFamily:"inherit",
+              }}>{line}</div>
+            ))}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
+      </div>
+
+      {/* Result summary */}
+      {prereqs && (prereqs.applied > 0 || prereqs.failed > 0) && (
+        <div style={{ ...css.card }}>
+          <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:14 }}>
+            Application History
+          </div>
+          <div style={{ display:"flex", gap:24 }}>
+            {[
+              { label:"Applied",  value:prereqs.applied,  color:C.accent },
+              { label:"Failed",   value:prereqs.failed,   color:C.danger },
+              { label:"Ready",    value:prereqs.ready,    color:C.warn },
+              { label:"Tailored", value:prereqs.tailored, color:C.blue },
+            ].map(({ label, value, color }) => (
+              <div key={label} style={{ textAlign:"center" }}>
+                <div style={{ fontSize:28, fontWeight:700, color, letterSpacing:"-0.02em" }}>{value}</div>
+                <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2482,8 +2858,16 @@ function TrackerTab({ token }) {
   return (
     <div style={{ position:"relative" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-        <SectionTitle>Application Pipeline</SectionTitle>
-        <button onClick={load} style={{ ...css.btn("outline"), fontSize:11, padding:"5px 12px" }}>↻ Refresh</button>
+        <SectionTitle>Application Tracker</SectionTitle>
+        <div style={{ display:"flex", gap:8 }}>
+          <button onClick={async () => {
+            const r = await api("POST", "/tracker/sync", null, token).catch(() => null);
+            if (r) { load(); }
+          }} style={{ ...css.btn("outline"), fontSize:11, padding:"5px 12px" }}>
+            ↓ Sync from Jobs
+          </button>
+          <button onClick={load} style={{ ...css.btn("outline"), fontSize:11, padding:"5px 12px" }}>↻ Refresh</button>
+        </div>
       </div>
 
       {(alerts.overdue.length > 0 || alerts.interview_soon.length > 0) ? (
@@ -2731,7 +3115,8 @@ export default function App() {
     dashboard: <DashboardTab token={token} />,
     setup:     <SetupTab token={token} />,
     pipeline:  <PipelineTab token={token} initialStages={pipelineStages} initialUrls={pipelineUrls} />,
-    jobs:      <JobsTab token={token} onGoToPipeline={goToPipeline} />,
+    jobs:      <JobsTab token={token} onGoToPipeline={goToPipeline} onGoToApply={() => setTab("apply")} />,
+    apply:     <ApplyTab token={token} />,
     tracker:   <TrackerTab token={token} />,
   };
 

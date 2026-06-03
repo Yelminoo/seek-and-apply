@@ -739,7 +739,24 @@ def delete_checklist(cid: int, current_user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
-# ── Stats / Alerts ────────────────────────────────────────────────────────────
+# ── Sync / Stats / Alerts ─────────────────────────────────────────────────────
+
+@router.post("/sync")
+def force_sync(current_user: dict = Depends(get_current_user)):
+    """Force-sync applied jobs from jobs table into tracking. Call after auto-apply."""
+    uid = current_user["uid"]
+    db_path = DATA_ROOT / uid / "applypilot.db"
+    if not db_path.exists():
+        return {"synced": 0}
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    conn.row_factory = sqlite3.Row
+    _init_tables(conn)
+    before = conn.execute("SELECT COUNT(*) FROM tracking").fetchone()[0]
+    _auto_sync(conn)
+    after = conn.execute("SELECT COUNT(*) FROM tracking").fetchone()[0]
+    conn.close()
+    return {"synced": after - before, "total": after}
+
 
 @router.get("/stats")
 def get_stats(current_user: dict = Depends(get_current_user)):

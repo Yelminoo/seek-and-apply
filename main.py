@@ -23,10 +23,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from auth import create_token, get_current_user, hash_password, verify_password
 from models import (
-    JobRow, LoginRequest, PipelineRunRequest, ProfileIn,
+    ApplyRunRequest, JobRow, LoginRequest, PipelineRunRequest, ProfileIn,
     RegisterRequest, StatusResponse, TokenResponse, UserOut,
 )
-from runner import JobRunner, get_stats_for_user, list_jobs_for_user
+from runner import JobRunner, check_apply_prereqs, get_stats_for_user, list_jobs_for_user
 import tracker as tracker_module
 from tracker import router as tracker_router
 
@@ -410,23 +410,103 @@ def reset_jobs(current_user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@app.get("/apply/status")
+def apply_status(
+    min_score: int = Query(default=1),
+    current_user: dict = Depends(get_current_user),
+):
+    """Check auto-apply prerequisites and available job counts."""
+    uid = current_user["uid"]
+    return check_apply_prereqs(DATA_ROOT / uid, min_score=min_score)
+
+
+@app.post("/apply/run")
+def run_apply(
+    req: ApplyRunRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    uid = current_user["uid"]
+    user_dir = DATA_ROOT / uid
+
+    prereqs = check_apply_prereqs(user_dir)
+    if not prereqs["claude_ok"]:
+        raise HTTPException(status_code=400, detail="Claude CLI not found. Run: npm install -g @anthropic-ai/claude-code")
+    if not prereqs["chrome_ok"]:
+        raise HTTPException(status_code=400, detail="Chrome not found. Install Google Chrome on the server.")
+    if prereqs["ready_any_score"] == 0 and not req.dry_run and not req.url_filter:
+        raise HTTPException(status_code=400, detail="No jobs ready to apply to. Run tailor + pdf stages first.")
+
+    if uid in _runners and _runners[uid].is_running():
+        raise HTTPException(status_code=409, detail="Pipeline already running. Stop it first.")
+
+    runner = JobRunner(user_id=uid, user_dir=user_dir)
+    _runners[uid] = runner
+    background_tasks.add_task(
+        runner.run_apply, req.limit, req.min_score, req.workers,
+        req.model, req.dry_run, req.headless, req.url_filter or None,
+    )
+    return {"ok": True, "job_id": runner.job_id}
+
+
 @app.post("/jobs/mark-applied")
 def mark_applied(data: dict, current_user: dict = Depends(get_current_user)):
-    """Mark specific jobs as manually applied (sets applied_at + apply_status)."""
+    """Mark jobs as manually applied. Accepts channel + resume_version for tracker records."""
     import sqlite3 as _sqlite3
+    from datetime import datetime, timedelta, timezone
     uid = current_user["uid"]
     db_path = DATA_ROOT / uid / "applypilot.db"
     urls: list = data.get("urls", [])
     if not urls or not db_path.exists():
         return {"marked": 0}
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
+
+    channel        = data.get("channel", "portal")
+    resume_version = data.get("resume_version", "original")
+    now            = datetime.now(timezone.utc).isoformat()
+    followup       = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
+
     conn = _sqlite3.connect(str(db_path))
-    conn.executemany(
-        "UPDATE jobs SET apply_status = 'applied', applied_at = ? WHERE url = ? AND applied_at IS NULL",
-        [(now, u) for u in urls],
-    )
-    marked = conn.total_changes
+    conn.row_factory = _sqlite3.Row
+
+    # Ensure tracker tables exist
+    import tracker as _tracker
+    _tracker._init_tables(conn)
+
+    marked = 0
+    for url in urls:
+        # Update jobs table
+        conn.execute(
+            "UPDATE jobs SET apply_status='applied', applied_at=? WHERE url=? AND applied_at IS NULL",
+            (now, url),
+        )
+        if conn.total_changes:
+            marked += 1
+
+        # Upsert pipeline record (stage='applied')
+        existing = conn.execute("SELECT id FROM job_pipeline WHERE job_url=?", (url,)).fetchone()
+        if existing:
+            pid = existing["id"]
+            conn.execute("UPDATE job_pipeline SET stage='applied', updated_at=? WHERE id=?", (now, pid))
+        else:
+            cur = conn.execute(
+                "INSERT INTO job_pipeline (job_url, stage, created_at, updated_at) VALUES (?,?,?,?)",
+                (url, "applied", now, now),
+            )
+            pid = cur.lastrowid
+
+        # Create application record if none yet for this manual apply
+        existing_app = conn.execute(
+            "SELECT id FROM applications WHERE pipeline_id=? AND channel=? AND applied_at=?",
+            (pid, channel, now),
+        ).fetchone()
+        if not existing_app:
+            conn.execute("""
+                INSERT INTO applications
+                  (pipeline_id, job_url, channel, resume_version, applied_at,
+                   followup_date, app_stage, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (pid, url, channel, resume_version, now, followup, "applied", now, now))
+
     conn.commit()
     conn.close()
     return {"marked": marked}

@@ -170,11 +170,18 @@ class JobRunner:
             if has_local:
                 env["APPLYPILOT_LLM_DELAY"] = "0"
             elif has_gemini:
-                env["APPLYPILOT_LLM_DELAY"] = "5"   # 12 RPM — 3 RPM headroom vs 15 RPM limit
+                env["APPLYPILOT_LLM_DELAY"] = "5"
             elif has_openai:
-                env["APPLYPILOT_LLM_DELAY"] = "0.5" # tier-1 is generous
+                env["APPLYPILOT_LLM_DELAY"] = "0.5"
             else:
                 env["APPLYPILOT_LLM_DELAY"] = "0"
+
+        # Force plain-text output from Rich so logs are readable in our pipe.
+        # Without these, Rich renders box-drawing characters and ANSI codes.
+        env["NO_COLOR"]          = "1"
+        env["TERM"]              = "dumb"
+        env["PYTHONIOENCODING"]  = "utf-8"
+        env["PYTHONUNBUFFERED"]  = "1"
 
         return env
 
@@ -542,6 +549,238 @@ class JobRunner:
                 self._write_cooldown()
             self._running = False
             self.current_stage = None
+
+
+    def run_apply(
+        self,
+        limit: int = 5,
+        min_score: int = 7,
+        workers: int = 1,
+        model: str = "sonnet",
+        dry_run: bool = False,
+        headless: bool = True,
+        url_filter: list = None,
+    ):
+        """Run the auto-apply stage (Claude Code + Chrome + Playwright MCP).
+
+        If url_filter is provided, applies only to those specific URLs
+        using `applypilot apply --url <url>` for each one.
+        """
+        self._running = True
+        self._logs = []
+        self.started_at = datetime.now(timezone.utc).isoformat()
+
+        def _base_flags():
+            flags = ["--model", model]
+            if dry_run:   flags.append("--dry-run")
+            if headless:  flags.append("--headless")
+            return flags
+
+        def _check_tailored(urls):
+            """Return which of the given URLs have tailored resumes."""
+            db_path = self.user_dir / "applypilot.db"
+            if not db_path.exists():
+                return []
+            conn = sqlite3.connect(str(db_path))
+            try:
+                ph = ",".join("?" * len(urls))
+                rows = conn.execute(
+                    f"SELECT url, tailored_resume_path, application_url FROM jobs WHERE url IN ({ph})",
+                    urls,
+                ).fetchall()
+                return rows
+            finally:
+                conn.close()
+
+        def _apply_result_summary(urls_before_statuses):
+            """Read DB after apply run and log what changed per URL."""
+            db_path = self.user_dir / "applypilot.db"
+            if not db_path.exists():
+                return
+            conn = sqlite3.connect(str(db_path))
+            try:
+                ph = ",".join("?" * len(urls_before_statuses))
+                rows = conn.execute(
+                    f"SELECT url, title, apply_status, apply_error, apply_attempts FROM jobs WHERE url IN ({ph})",
+                    list(urls_before_statuses.keys()),
+                ).fetchall()
+                applied = failed = skipped = 0
+                self._append_log("[ApplyPilot Server] ─── Result summary ───────────────────────")
+                for url, title, status, error, attempts in rows:
+                    prev = urls_before_statuses.get(url)
+                    label = (title or url)[:55]
+                    if status == "applied":
+                        self._append_log(f"  ✓  APPLIED    {label}")
+                        applied += 1
+                    elif status == "failed":
+                        self._append_log(f"  ✗  FAILED     {label} — {error or 'unknown'}")
+                        failed += 1
+                    elif status == "captcha":
+                        self._append_log(f"  ⚠  CAPTCHA    {label}")
+                        failed += 1
+                    elif status == "manual":
+                        self._append_log(f"  ⊘  MANUAL ATS {label} — needs human")
+                        skipped += 1
+                    elif status == prev or status is None:
+                        self._append_log(f"  –  NO CHANGE  {label} — job may not be tailored yet")
+                        skipped += 1
+                    else:
+                        self._append_log(f"  ?  {status.upper():<10} {label}")
+                        skipped += 1
+                self._append_log(
+                    f"[ApplyPilot Server] Applied: {applied} | Failed/CAPTCHA: {failed} | Skipped: {skipped}"
+                )
+                if skipped > 0 and applied == 0:
+                    self._append_log(
+                        "[ApplyPilot Server] ⚠ Nothing was applied. Common reasons:"
+                    )
+                    self._append_log("[ApplyPilot Server]   • Job doesn't have a tailored resume yet — run score → tailor → pdf first")
+                    self._append_log("[ApplyPilot Server]   • Job is on a blocked/CAPTCHA-heavy site")
+                    self._append_log("[ApplyPilot Server]   • Job listing has expired")
+            finally:
+                conn.close()
+
+        try:
+            self._append_log("[ApplyPilot Server] Starting auto-apply agent")
+            self._append_log(f"[ApplyPilot Server] User dir: {self.user_dir}")
+            if url_filter:
+                self._append_log(f"[ApplyPilot Server] Targeted apply: {len(url_filter)} selected job(s)")
+            else:
+                self._append_log(f"[ApplyPilot Server] Limit: {limit} | Min score: {min_score} | Model: {model}")
+            if dry_run:
+                self._append_log("[ApplyPilot Server] DRY RUN — will not actually submit forms")
+            self._append_log("")
+
+            self.current_stage = "apply"
+
+            if url_filter:
+                targets = url_filter[:limit] if limit else url_filter
+                total = len(targets)
+
+                # Pre-flight: warn about jobs without tailored resumes
+                rows = _check_tailored(targets)
+                not_tailored = [r[0] for r in rows if not r[1]]
+                not_ready    = [r[0] for r in rows if not r[2]]
+                if not_tailored:
+                    self._append_log(
+                        f"[ApplyPilot Server] ⚠ {len(not_tailored)}/{total} selected jobs have NO tailored resume. "
+                        f"Run score → tailor → pdf first."
+                    )
+                if not_ready:
+                    self._append_log(
+                        f"[ApplyPilot Server] ⚠ {len(not_ready)}/{total} selected jobs have no apply URL — enrich stage needed."
+                    )
+                self._append_log("")
+
+                # Record status before running so we can diff after
+                prev_statuses = {r[0]: None for r in rows}
+
+                for i, url in enumerate(targets, 1):
+                    if not self._running:
+                        break
+                    self._append_log(f"[ApplyPilot Server] [{i}/{total}] → {url[:80]}")
+                    cmd = ["applypilot", "apply", "--url", url] + _base_flags()
+                    self._run_cmd(cmd)
+                    self._append_log("")
+
+                _apply_result_summary(prev_statuses)
+
+            else:
+                cmd = [
+                    "applypilot", "apply",
+                    "--limit",     str(limit),
+                    "--min-score", str(min_score),
+                    "--workers",   str(workers),
+                ] + _base_flags()
+                rc = self._run_cmd(cmd)
+                self._append_log("")
+                if rc == 0:
+                    self._append_log("[ApplyPilot Server] Auto-apply finished.")
+                else:
+                    self._append_log(f"[ApplyPilot Server] Auto-apply exited with code {rc}")
+
+        except Exception as e:
+            self._append_log(f"[ApplyPilot Server] Unexpected error: {e}")
+        finally:
+            self._running = False
+            self.current_stage = None
+
+
+def check_apply_prereqs(user_dir: Path, min_score: int = 1) -> dict:
+    """Check whether auto-apply can run: Claude CLI, Chrome, available jobs."""
+    import shutil
+
+    claude_path = shutil.which("claude")
+    claude_ok   = claude_path is not None
+
+    chrome_candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "/usr/bin/google-chrome", "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    chrome_ok = any(Path(p).exists() for p in chrome_candidates)
+
+    tailored = ready = ready_any_score = applied = failed = 0
+    max_score = min_available_score = None
+    db_path = user_dir / "applypilot.db"
+    if db_path.exists():
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tailored = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL"
+            ).fetchone()[0]
+            # Jobs ready at the requested threshold
+            ready = conn.execute(
+                "SELECT COUNT(*) FROM jobs "
+                "WHERE tailored_resume_path IS NOT NULL "
+                "AND application_url IS NOT NULL "
+                "AND (apply_status IS NULL OR apply_status = 'failed') "
+                "AND (fit_score IS NULL OR fit_score >= ?)",
+                (min_score,),
+            ).fetchone()[0]
+            # Jobs ready at ANY score (so we can warn about threshold mismatch)
+            ready_any_score = conn.execute(
+                "SELECT COUNT(*) FROM jobs "
+                "WHERE tailored_resume_path IS NOT NULL "
+                "AND application_url IS NOT NULL "
+                "AND (apply_status IS NULL OR apply_status = 'failed')"
+            ).fetchone()[0]
+            # Lowest available score among tailored jobs
+            row = conn.execute(
+                "SELECT MIN(fit_score), MAX(fit_score) FROM jobs "
+                "WHERE tailored_resume_path IS NOT NULL AND fit_score IS NOT NULL"
+            ).fetchone()
+            if row and row[0] is not None:
+                min_available_score, max_score = row[0], row[1]
+            applied = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE apply_status = 'applied'"
+            ).fetchone()[0]
+            failed = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE apply_status = 'failed'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    threshold_warning = (
+        ready == 0 and ready_any_score > 0 and min_available_score is not None
+        and min_available_score < min_score
+    )
+
+    return {
+        "claude_ok":          claude_ok,
+        "claude_path":        claude_path,
+        "chrome_ok":          chrome_ok,
+        "tailored":           tailored,
+        "ready":              ready,
+        "ready_any_score":    ready_any_score,
+        "applied":            applied,
+        "failed":             failed,
+        "min_available_score": min_available_score,
+        "max_score":           max_score,
+        "threshold_warning":  threshold_warning,
+        "can_run":            claude_ok and chrome_ok and (ready > 0 or ready_any_score > 0),
+    }
 
 
 # ---------------------------------------------------------------------------
