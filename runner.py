@@ -321,6 +321,111 @@ class JobRunner:
             conn.close()
         self._append_log("[ApplyPilot Server] URL filter restored.")
 
+    def _find_error_scored_urls(self) -> list[str]:
+        """Return URLs of jobs that have fit_score=0 due to LLM API errors."""
+        db_path = self.user_dir / "applypilot.db"
+        if not db_path.exists():
+            return []
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT url FROM jobs WHERE fit_score = 0 AND score_reasoning LIKE '%LLM error%'"
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+
+    def _reset_error_scores(self, urls: list[str]) -> None:
+        """Set fit_score back to NULL for failed jobs so they re-queue."""
+        if not urls:
+            return
+        db_path = self.user_dir / "applypilot.db"
+        conn = sqlite3.connect(str(db_path))
+        ph = ",".join("?" * len(urls))
+        try:
+            conn.execute(
+                f"UPDATE jobs SET fit_score = NULL, score_reasoning = NULL WHERE url IN ({ph})",
+                urls,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _score_retry_loop(
+        self,
+        min_score: int,
+        workers: int,
+        validation: str,
+        max_retries: int = 3,
+    ) -> None:
+        """After main pipeline, retry any jobs that failed scoring due to API errors.
+
+        Resets failed jobs to NULL, waits for the Gemini rate-limit window to
+        clear, then re-runs the score stage scoped to only those URLs. Repeats
+        up to max_retries times or until no failures remain.
+        """
+        env = self._make_env()
+        is_gemini = bool(env.get("GEMINI_API_KEY")) and not env.get("LLM_URL")
+
+        for attempt in range(1, max_retries + 1):
+            if not self._running:
+                return
+
+            failed_urls = self._find_error_scored_urls()
+            if not failed_urls:
+                return
+
+            self._append_log("")
+            self._append_log(
+                f"[ApplyPilot Server] {len(failed_urls)} job(s) failed scoring (API error). "
+                f"Retry {attempt}/{max_retries}."
+            )
+
+            # Reset failed scores to NULL so score stage picks them up
+            self._reset_error_scores(failed_urls)
+
+            # Wait for rate-limit window before retrying
+            wait = 75 if is_gemini else 5
+            self._append_log(f"[Rate limit] Waiting {wait}s before retry...")
+            for remaining in range(wait, 0, -5):
+                if not self._running:
+                    return
+                self._append_log(f"[Rate limit] Retry in {remaining}s...")
+                time.sleep(min(5, remaining))
+
+            if not self._running:
+                return
+
+            # Scope the retry to only the failed URLs
+            blocked = self._block_non_selected(["score"], failed_urls)
+            try:
+                cmd = [
+                    "applypilot", "run",
+                    "--min-score", str(min_score),
+                    "--workers", str(workers),
+                    "--validation", validation,
+                    "score",
+                ]
+                rc = self._run_cmd(cmd)
+                if rc != 0:
+                    self._append_log(f"[ApplyPilot Server] Score retry {attempt} exited with code {rc}")
+                else:
+                    self._append_log(f"[ApplyPilot Server] Score retry {attempt} completed.")
+            finally:
+                self._unblock_non_selected(blocked)
+
+            if is_gemini:
+                self._write_cooldown()
+
+        # Final check — report any still-failing jobs
+        still_failed = self._find_error_scored_urls()
+        if still_failed:
+            self._append_log(
+                f"[ApplyPilot Server] ⚠ {len(still_failed)} job(s) still failed after {max_retries} retries. "
+                f"They will be reset and retried on the next pipeline run."
+            )
+            self._reset_error_scores(still_failed)
+
     def run_pipeline(
         self,
         stages: list[str],
@@ -336,6 +441,7 @@ class JobRunner:
 
         blocked: list[tuple[str, str]] = []
         has_llm = any(s in self._LLM_STAGES for s in stages)
+        run_score = "all" in stages or "score" in stages
         try:
             # Clean up any sentinels left by a previously interrupted URL-filtered run
             self._clear_sentinels()
@@ -377,6 +483,10 @@ class JobRunner:
             else:
                 self._append_log("")
                 self._append_log(f"[ApplyPilot Server] Pipeline exited with code {rc}")
+
+            # Auto-retry any jobs that failed scoring due to API errors (429, timeout, etc.)
+            if run_score and self._running:
+                self._score_retry_loop(min_score, workers, validation)
 
         except Exception as e:
             self._append_log(f"[ApplyPilot Server] Unexpected error: {e}")
