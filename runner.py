@@ -189,6 +189,62 @@ class JobRunner:
                 f"[ApplyPilot Server] Cleared {cleared} stale filter sentinel(s) from a previous interrupted run."
             )
 
+    def _log_db_summary(self, stages: list[str], min_score: int) -> None:
+        """Log eligible job counts for each requested stage before the CLI runs.
+
+        Makes it immediately obvious when a stage will process 0 jobs and why
+        (e.g. no scored jobs → tailor finds nothing, or all jobs already tailored).
+        """
+        db_path = self.user_dir / "applypilot.db"
+        if not db_path.exists():
+            return
+        conn = sqlite3.connect(str(db_path))
+
+        def q(sql):
+            try:
+                return conn.execute(sql).fetchone()[0]
+            except Exception:
+                return "?"
+
+        try:
+            total   = q("SELECT COUNT(*) FROM jobs")
+            scored  = q("SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL AND fit_score != -9999")
+            above   = q(f"SELECT COUNT(*) FROM jobs WHERE fit_score >= {min_score}")
+            tailored = q("SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND tailored_resume_path != '__FILTERED__'")
+            covered = q("SELECT COUNT(*) FROM jobs WHERE cover_letter_path IS NOT NULL AND cover_letter_path != '__FILTERED__'")
+            enriched = q("SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL AND full_description != '__FILTERED__'")
+
+            self._append_log(f"[ApplyPilot Server] DB: {total} jobs, {enriched} pending enrichment")
+
+            run_all = "all" in stages
+            if run_all or "score" in stages:
+                pending_score = q("SELECT COUNT(*) FROM jobs WHERE fit_score IS NULL")
+                self._append_log(f"[ApplyPilot Server]   score  → {pending_score} pending (of {total} total)")
+
+            if run_all or "tailor" in stages:
+                pending_tailor = q(
+                    f"SELECT COUNT(*) FROM jobs "
+                    f"WHERE fit_score >= {min_score} AND tailored_resume_path IS NULL"
+                )
+                self._append_log(
+                    f"[ApplyPilot Server]   tailor → {pending_tailor} pending "
+                    f"(scored≥{min_score}: {above}, already tailored: {tailored})"
+                )
+
+            if run_all or "cover" in stages:
+                pending_cover = q(
+                    f"SELECT COUNT(*) FROM jobs "
+                    f"WHERE fit_score >= {min_score} AND cover_letter_path IS NULL"
+                )
+                self._append_log(
+                    f"[ApplyPilot Server]   cover  → {pending_cover} pending "
+                    f"(scored≥{min_score}: {above}, already covered: {covered})"
+                )
+        finally:
+            conn.close()
+
+        self._append_log("=" * 70)
+
     def _block_non_selected(self, stages: list[str], url_filter: list[str]) -> list[tuple[str, str]]:
         """Set sentinel values on non-selected jobs so the CLI skips them.
         Returns (column, url) pairs that must be restored afterward."""
@@ -280,6 +336,9 @@ class JobRunner:
             env_check = self._make_env()
             if env_check.get("GEMINI_API_KEY") and not env_check.get("LLM_URL"):
                 self._gemini_startup_wait(stages)
+
+            # Log eligible job counts so the user can see exactly what each stage will process
+            self._log_db_summary(stages, min_score)
 
             # Block non-selected jobs before running
             if url_filter:
