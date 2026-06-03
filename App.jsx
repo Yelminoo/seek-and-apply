@@ -19,6 +19,19 @@ async function api(method, path, body, token) {
   return res.json();
 }
 
+async function downloadFile(path, token) {
+  const res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error("File not found");
+  const blob = await res.blob();
+  const disposition = res.headers.get("content-disposition") || "";
+  const match = disposition.match(/filename="?([^";\n]+)"?/i);
+  const name  = match ? match[1] : path.split("/").pop();
+  const url   = URL.createObjectURL(blob);
+  const a     = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Hooks ───────────────────────────────────────────────────────────────────
 
 function useAuth() {
@@ -1621,14 +1634,14 @@ function JobsTab({ token, onGoToPipeline }) {
                 <th style={{ padding:"10px 14px", width:32 }}>
                   <input type="checkbox" checked={allPageSelected} onChange={toggleAll} />
                 </th>
-                {["Title","Location","Site","Score","Status","Applied","Discovered"].map(h => (
+                {["Title","Location","Site","Score","Status","Applied","Discovered","Files"].map(h => (
                   <th key={h} style={{ padding:"10px 14px", color:C.muted, fontWeight:400, letterSpacing:"0.08em", textTransform:"uppercase", fontSize:10, textAlign:"left" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {paginated.length === 0 && (
-                <tr><td colSpan={8} style={{ padding:24, textAlign:"center", color:C.muted }}>
+                <tr><td colSpan={9} style={{ padding:24, textAlign:"center", color:C.muted }}>
                   {allJobs.length > 0 ? "No jobs match your filters." : "No jobs found for this stage."}
                 </td></tr>
               )}
@@ -1670,6 +1683,31 @@ function JobsTab({ token, onGoToPipeline }) {
                     </td>
                     <td style={{ padding:"9px 14px", color:C.muted, fontSize:11 }}>
                       {job.discovered_at ? new Date(job.discovered_at).toLocaleDateString() : "—"}
+                    </td>
+                    <td style={{ padding:"9px 14px" }} onClick={e => e.stopPropagation()}>
+                      <div style={{ display:"flex", gap:5 }}>
+                        {job.tailored_resume_path ? (
+                          <button
+                            onClick={() => downloadFile(`/jobs/${encodeURIComponent(job.url)}/resume`, token).catch(() => alert("Resume file not ready yet"))}
+                            title="Download tailored resume (PDF)"
+                            style={{ background:C.accentDim, border:`1px solid ${C.accent}44`, borderRadius:4,
+                              color:C.accent, cursor:"pointer", fontSize:10, fontFamily:"inherit", padding:"3px 7px" }}>
+                            📄 CV
+                          </button>
+                        ) : null}
+                        {job.cover_letter_path ? (
+                          <button
+                            onClick={() => downloadFile(`/jobs/${encodeURIComponent(job.url)}/cover`, token).catch(() => alert("Cover letter file not ready yet"))}
+                            title="Download cover letter (PDF)"
+                            style={{ background:"#3b82f622", border:"1px solid #3b82f644", borderRadius:4,
+                              color:"#60a5fa", cursor:"pointer", fontSize:10, fontFamily:"inherit", padding:"3px 7px" }}>
+                            ✉ CL
+                          </button>
+                        ) : null}
+                        {!job.tailored_resume_path && !job.cover_letter_path ? (
+                          <span style={{ color:C.border }}>—</span>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 );

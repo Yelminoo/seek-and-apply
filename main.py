@@ -368,26 +368,36 @@ def get_stats(current_user: dict = Depends(get_current_user)):
     return get_stats_for_user(user_dir)
 
 
-@app.get("/jobs/{job_url:path}/resume")
-def download_resume(
-    job_url: str,
-    current_user: dict = Depends(get_current_user),
-):
-    """Download tailored resume PDF for a specific job."""
-    uid = current_user["uid"]
-    user_dir = DATA_ROOT / uid
-
-    # Find the job in DB
-    jobs = list_jobs_for_user(user_dir, stage="tailored", limit=500)
+def _job_file_response(user_dir: Path, job_url: str, column: str, preferred_suffix: str, media_type: str, fallback_suffix: str = ".txt"):
+    """Shared helper: find a generated file for a job and return it as a download."""
+    jobs = list_jobs_for_user(user_dir, stage="tailored", limit=2000)
     job = next((j for j in jobs if j.get("url") == job_url), None)
-    if not job or not job.get("tailored_resume_path"):
-        raise HTTPException(status_code=404, detail="Tailored resume not found")
+    if not job or not job.get(column):
+        raise HTTPException(status_code=404, detail=f"{column} not found for this job")
 
-    resume_path = Path(job["tailored_resume_path"]).with_suffix(".pdf")
-    if not resume_path.exists():
-        raise HTTPException(status_code=404, detail="Resume PDF not found")
+    base = Path(job[column])
+    preferred = base.with_suffix(preferred_suffix)
+    fallback  = base.with_suffix(fallback_suffix)
 
-    return FileResponse(str(resume_path), media_type="application/pdf")
+    if preferred.exists():
+        return FileResponse(str(preferred), media_type=media_type, filename=preferred.name)
+    if fallback.exists():
+        return FileResponse(str(fallback), media_type="text/plain; charset=utf-8", filename=fallback.name)
+    raise HTTPException(status_code=404, detail=f"File not found (tried {preferred.name} and {fallback.name})")
+
+
+@app.get("/jobs/{job_url:path}/resume")
+def download_resume(job_url: str, current_user: dict = Depends(get_current_user)):
+    """Download tailored resume — PDF if generated, otherwise .txt."""
+    return _job_file_response(DATA_ROOT / current_user["uid"], job_url,
+                              "tailored_resume_path", ".pdf", "application/pdf")
+
+
+@app.get("/jobs/{job_url:path}/cover")
+def download_cover(job_url: str, current_user: dict = Depends(get_current_user)):
+    """Download cover letter — PDF if generated, otherwise .txt."""
+    return _job_file_response(DATA_ROOT / current_user["uid"], job_url,
+                              "cover_letter_path", ".pdf", "application/pdf")
 
 
 @app.delete("/jobs/reset")
