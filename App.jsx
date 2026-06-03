@@ -1176,7 +1176,7 @@ function PipelineTab({ token, initialStages, initialUrls }) {
             <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:12 }}>Options</div>
             <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
               <div>
-                <label style={css.label}>Min Score (1–10)</label>
+                <label style={css.label}>Min Score (1–10) — tailor/cover only run on jobs ≥ this</label>
                 <input style={css.input} type="number" min={1} max={10} value={minScore} onChange={e => setMinScore(+e.target.value)} />
               </div>
               <div>

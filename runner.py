@@ -5,11 +5,14 @@ Each user gets their own APPLYPILOT_DIR so data is fully isolated.
 Logs are buffered in memory and streamed via SSE.
 """
 
+import json as _json
 import os
 import sqlite3
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,32 +71,79 @@ class JobRunner:
         except Exception:
             pass
 
-    def _gemini_startup_wait(self, stages: list[str]) -> None:
-        """If last LLM run was within 75s, wait out the rolling window.
+    def _wait_for_gemini_quota(self, stages: list[str]) -> None:
+        """Guarantee Gemini quota is available before the CLI makes its first call.
 
-        Gemini free tier = 15 RPM = 1 req / 4s. The rolling window is 60s.
-        If the previous run consumed requests in the last <75s, a new run
-        starting immediately risks a 429 on the very first call.
+        Two layers:
+        1. File-based fast path: if the last LLM run finished <75s ago, wait
+           out the remainder without spending a request.
+        2. Quota probe: send a 1-token request. 200 → proceed immediately.
+           429 → wait 65s and probe again (loop until success or pipeline stopped).
+
+        Layer 2 is the critical one: it handles server restarts, first-ever runs,
+        and cases where the cooldown file is stale. Prevents 190 seconds of
+        guaranteed-to-fail internal applypilot retries (10+20+40+60+60s backoff).
         """
-        has_llm_stage = any(s in self._LLM_STAGES for s in stages)
-        if not has_llm_stage:
+        if not any(s in self._LLM_STAGES for s in stages):
             return
+        env = self._make_env()
+        if not env.get("GEMINI_API_KEY") or env.get("LLM_URL"):
+            return  # local LLM or no key — skip
+
+        # Layer 1: file-based cooldown (no request cost)
         last = self._read_cooldown()
-        if last is None:
-            return
-        elapsed = time.time() - last
-        window = 75  # 60s rolling window + 15s buffer
-        if elapsed < window:
-            wait = int(window - elapsed)
-            self._append_log(
-                f"[Rate limit] Gemini cooldown: previous LLM run was {int(elapsed)}s ago. "
-                f"Waiting {wait}s to clear the 60-second rolling window..."
-            )
-            for remaining in range(wait, 0, -5):
-                if not self._running:
-                    return
-                self._append_log(f"[Rate limit] Starting in {remaining}s...")
-                time.sleep(min(5, remaining))
+        if last is not None:
+            elapsed = time.time() - last
+            if elapsed < 75:
+                wait = int(75 - elapsed)
+                self._append_log(
+                    f"[Rate limit] Gemini cooldown: last run was {int(elapsed)}s ago, "
+                    f"waiting {wait}s to clear the 60s rolling window..."
+                )
+                for remaining in range(wait, 0, -5):
+                    if not self._running:
+                        return
+                    self._append_log(f"[Rate limit] Starting in {remaining}s...")
+                    time.sleep(min(5, remaining))
+
+        # Layer 2: live quota probe (costs 1 request, confirms quota is ready)
+        model   = env.get("LLM_MODEL", "gemini-2.0-flash")
+        api_key = env["GEMINI_API_KEY"]
+        probe_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        payload = _json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "1"}],
+            "max_tokens": 1,
+        }).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        attempt = 0
+        while self._running:
+            try:
+                req = urllib.request.Request(probe_url, data=payload, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=15):
+                    pass
+                if attempt > 0:
+                    self._append_log("[Rate limit] Gemini quota available — starting pipeline.")
+                return  # 200 OK: quota confirmed
+            except urllib.error.HTTPError as e:
+                if e.code != 429:
+                    return  # auth error or other — let CLI surface it
+                attempt += 1
+                self._append_log(
+                    f"[Rate limit] Gemini quota probe: 429 (attempt {attempt}). "
+                    f"Waiting 65s for the rolling window to clear..."
+                )
+                for remaining in range(65, 0, -5):
+                    if not self._running:
+                        return
+                    self._append_log(f"[Rate limit] Probe retry in {remaining}s...")
+                    time.sleep(min(5, remaining))
+            except Exception:
+                return  # network error — let CLI proceed and handle it
 
     def _make_env(self) -> dict:
         """Build subprocess env with APPLYPILOT_DIR pointing to this user's dir."""
@@ -384,15 +434,11 @@ class JobRunner:
             # Reset failed scores to NULL so score stage picks them up
             self._reset_error_scores(failed_urls)
 
-            # Wait for rate-limit window before retrying
-            wait = 75 if is_gemini else 5
-            self._append_log(f"[Rate limit] Waiting {wait}s before retry...")
-            for remaining in range(wait, 0, -5):
-                if not self._running:
-                    return
-                self._append_log(f"[Rate limit] Retry in {remaining}s...")
-                time.sleep(min(5, remaining))
+            if not self._running:
+                return
 
+            # Probe quota before re-running (reuses the same layer-1+2 probe)
+            self._wait_for_gemini_quota(["score"])
             if not self._running:
                 return
 
@@ -453,10 +499,8 @@ class JobRunner:
                 self._append_log(f"[ApplyPilot Server] Job filter: {len(url_filter)} URL(s)")
             self._append_log("")
 
-            # Gemini free tier: enforce rolling-window cooldown between runs
-            env_check = self._make_env()
-            if env_check.get("GEMINI_API_KEY") and not env_check.get("LLM_URL"):
-                self._gemini_startup_wait(stages)
+            # Probe Gemini quota before handing off to the CLI
+            self._wait_for_gemini_quota(stages)
 
             # Log eligible job counts so the user can see exactly what each stage will process
             self._log_db_summary(stages, min_score)
