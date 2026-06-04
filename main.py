@@ -571,6 +571,26 @@ def reset_stuck_jobs(current_user: dict = Depends(get_current_user)):
     return {"reset": reset}
 
 
+@app.post("/jobs/reset-attempts")
+def reset_max_attempts(current_user: dict = Depends(get_current_user)):
+    """Reset jobs that hit max apply_attempts so they can be retried."""
+    import sqlite3
+    uid = current_user["uid"]
+    db_path = DATA_ROOT / uid / "applypilot.db"
+    if not db_path.exists():
+        return {"reset": 0}
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.execute("""
+        UPDATE jobs SET apply_attempts = 0, apply_status = NULL
+        WHERE apply_attempts >= 3
+          AND (apply_status IS NULL OR apply_status NOT IN ('applied'))
+    """)
+    reset = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"reset": reset}
+
+
 @app.post("/jobs/delete")
 def delete_jobs(data: dict, current_user: dict = Depends(get_current_user)):
     """Delete specific jobs by URL."""

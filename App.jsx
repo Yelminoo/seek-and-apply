@@ -2061,6 +2061,17 @@ function ApplyTab({ token }) {
                   </button>
                 </div>
               )}
+              {prereqs.maxed > 0 && (
+                <div style={{ background:C.warn+"18", border:`1px solid ${C.warn}44`, borderRadius:6, padding:"8px 12px", marginTop:4, fontSize:11, color:C.warn, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <span>⚠ {prereqs.maxed} job{prereqs.maxed>1?"s":""} hit the 3-attempt limit — excluded from queue</span>
+                  <button onClick={async () => {
+                    const r = await api("POST", "/jobs/reset-attempts", null, token).catch(() => null);
+                    if (r) { alert(`Reset ${r.reset} job(s) — they will be retried.`); loadPrereqs(); }
+                  }} style={{ background:C.warn+"33", border:`1px solid ${C.warn}`, borderRadius:4, color:C.warn, cursor:"pointer", fontSize:10, fontFamily:"inherit", padding:"3px 10px", fontWeight:700 }}>
+                    Reset attempts
+                  </button>
+                </div>
+              )}
             </>}
           </div>
 
