@@ -1455,6 +1455,7 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
   const [search, setSearch]     = useState("");
   const [filterSite, setFilterSite]   = useState("");
   const [filterScore, setFilterScore] = useState("");
+  const [sortBy, setSortBy]           = useState("score");
   const [page, setPage]         = useState(0);
   const [selected, setSelected] = useState(new Set());
   const [applyForm, setApplyForm] = useState({ show:false, channel:"portal", resumeChoice:"tailored", note:"" });
@@ -1482,7 +1483,7 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
 
   useEffect(() => { load(stage); }, [stage, token]);
   useEffect(() => { loadCounts(); }, [token]);
-  useEffect(() => { setPage(0); }, [search, filterSite, filterScore]);
+  useEffect(() => { setPage(0); }, [search, filterSite, filterScore, sortBy]);
 
   const sites = useMemo(() => [...new Set(allJobs.map(j => j.site).filter(Boolean))].sort(), [allJobs]);
 
@@ -1498,8 +1499,16 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
     }
     if (filterSite)  jobs = jobs.filter(j => j.site === filterSite);
     if (filterScore) jobs = jobs.filter(j => j.fit_score != null && j.fit_score >= +filterScore);
+
+    jobs = [...jobs].sort((a, b) => {
+      if (sortBy === "newest") return new Date(b.discovered_at||0) - new Date(a.discovered_at||0);
+      if (sortBy === "oldest") return new Date(a.discovered_at||0) - new Date(b.discovered_at||0);
+      // "score" (default): best score first, then newest
+      const sd = (b.fit_score??-1) - (a.fit_score??-1);
+      return sd !== 0 ? sd : new Date(b.discovered_at||0) - new Date(a.discovered_at||0);
+    });
     return jobs;
-  }, [allJobs, search, filterSite, filterScore]);
+  }, [allJobs, search, filterSite, filterScore, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated  = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -1582,6 +1591,11 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
           <option value="8">8+ great</option>
           <option value="7">7+ good (≥min)</option>
           <option value="5">5+ fair</option>
+        </select>
+        <select style={{ ...css.input, width:160 }} value={sortBy} onChange={e => setSortBy(e.target.value)}>
+          <option value="score">↓ Best score first</option>
+          <option value="newest">↓ Newest found first</option>
+          <option value="oldest">↑ Oldest found first</option>
         </select>
         {(search || filterSite || filterScore) && (
           <button onClick={() => { setSearch(""); setFilterSite(""); setFilterScore(""); }}
@@ -1782,8 +1796,14 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
                 <th style={{ padding:"10px 14px", width:32 }}>
                   <input type="checkbox" checked={allPageSelected} onChange={toggleAll} />
                 </th>
-                {["Title","Location","Site","Score","Status","Applied","Discovered","Files"].map(h => (
-                  <th key={h} style={{ padding:"10px 14px", color:C.muted, fontWeight:400, letterSpacing:"0.08em", textTransform:"uppercase", fontSize:10, textAlign:"left" }}>{h}</th>
+                {["Title","Location","Site","Score","Status","Attempts","Found","Files"].map(h => (
+                  <th key={h} onClick={h==="Found" ? () => setSortBy(s => s==="newest"?"oldest":"newest") : undefined}
+                    title={h==="Found" ? "Click to sort by date" : undefined}
+                    style={{ padding:"10px 14px", color: h==="Found" ? (sortBy!=="score"?C.accent:C.muted) : C.muted,
+                      fontWeight:400, letterSpacing:"0.08em", textTransform:"uppercase", fontSize:10, textAlign:"left",
+                      cursor: h==="Found" ? "pointer" : "default" }}>
+                    {h}{h==="Found" && sortBy==="newest" ? " ↓" : h==="Found" && sortBy==="oldest" ? " ↑" : ""}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -1822,15 +1842,22 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
                       }
                     </td>
                     <td style={{ padding:"9px 14px" }}>
-                      {job.apply_status ? <span style={css.tag(job.apply_status === "applied" ? C.accent : C.warn)}>{job.apply_status}</span> : <span style={{ color:C.border }}>—</span>}
+                      {job.apply_status === "applied"      ? <span style={css.tag(C.accent)}>✓ applied</span>
+                     : job.apply_status === "in_progress"  ? <span style={css.tag(C.blue)} title="Apply process was interrupted — reset to retry">⋯ stuck</span>
+                     : job.apply_status === "failed"       ? <span style={css.tag(C.danger)}>✗ failed</span>
+                     : job.apply_status === "captcha"      ? <span style={css.tag(C.warn)}>⚠ captcha</span>
+                     : job.apply_status === "manual"       ? <span style={css.tag(C.muted)}>⊘ manual</span>
+                     : job.apply_status                    ? <span style={css.tag(C.muted)}>{job.apply_status}</span>
+                     : <span style={{ color:C.border }}>—</span>}
                     </td>
                     <td style={{ padding:"9px 14px" }}>
                       {job.apply_attempts > 0
-                        ? <span style={css.tag(job.apply_attempts > 1 ? C.warn : C.muted)}>{job.apply_attempts}×</span>
+                        ? <span style={css.tag(job.apply_attempts > 1 ? C.warn : C.muted)} title={`Attempted ${job.apply_attempts} time(s)`}>{job.apply_attempts}×</span>
                         : <span style={{ color:C.border }}>—</span>}
                     </td>
-                    <td style={{ padding:"9px 14px", color:C.muted, fontSize:11 }}>
-                      {job.discovered_at ? new Date(job.discovered_at).toLocaleDateString() : "—"}
+                    <td style={{ padding:"9px 14px", color:C.muted, fontSize:11 }}
+                      title={job.discovered_at ? new Date(job.discovered_at).toLocaleString() : ""}>
+                      {job.discovered_at ? daysAgo(job.discovered_at) || new Date(job.discovered_at).toLocaleDateString() : "—"}
                     </td>
                     <td style={{ padding:"9px 14px" }} onClick={e => e.stopPropagation()}>
                       <div style={{ display:"flex", gap:5 }}>
@@ -2010,6 +2037,17 @@ function ApplyTab({ token }) {
                   ↗ No tailored jobs yet — run score → tailor → pdf in the Pipeline tab first.
                 </div>
               )}
+              {prereqs.stuck > 0 && (
+                <div style={{ background:C.blue+"18", border:`1px solid ${C.blue}44`, borderRadius:6, padding:"8px 12px", marginTop:4, fontSize:11, color:C.blue, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <span>⋯ {prereqs.stuck} job{prereqs.stuck>1?"s":""} stuck in "in_progress" (apply was interrupted)</span>
+                  <button onClick={async () => {
+                    const r = await api("POST", "/jobs/reset-stuck", null, token).catch(() => null);
+                    if (r) { loadPrereqs(); }
+                  }} style={{ background:C.blue+"33", border:`1px solid ${C.blue}`, borderRadius:4, color:C.blue, cursor:"pointer", fontSize:10, fontFamily:"inherit", padding:"3px 10px", fontWeight:700 }}>
+                    Reset → retry
+                  </button>
+                </div>
+              )}
             </>}
           </div>
 
@@ -2185,8 +2223,13 @@ const NOTE_TYPES = [
 
 function daysAgo(iso) {
   if (!iso) return null;
-  const diff = Math.floor((Date.now() - new Date(iso)) / 86400000);
-  return diff === 0 ? "today" : diff === 1 ? "1d ago" : `${diff}d ago`;
+  const ms = Date.now() - new Date(iso);
+  if (ms < 0) return "just now";
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1)  return "just now";
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(ms / 86_400_000);
+  return days === 1 ? "1d ago" : `${days}d ago`;
 }
 
 // ── Reusable tracker components (module-level per rerender-no-inline-components) ──

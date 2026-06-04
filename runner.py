@@ -759,6 +759,9 @@ def check_apply_prereqs(user_dir: Path, min_score: int = 1) -> dict:
             failed = conn.execute(
                 "SELECT COUNT(*) FROM jobs WHERE apply_status = 'failed'"
             ).fetchone()[0]
+            stuck = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE apply_status = 'in_progress'"
+            ).fetchone()[0]
         finally:
             conn.close()
 
@@ -776,6 +779,7 @@ def check_apply_prereqs(user_dir: Path, min_score: int = 1) -> dict:
         "ready_any_score":    ready_any_score,
         "applied":            applied,
         "failed":             failed,
+        "stuck":              stuck,
         "min_available_score": min_available_score,
         "max_score":           max_score,
         "threshold_warning":  threshold_warning,

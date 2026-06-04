@@ -514,6 +514,22 @@ def mark_applied(data: dict, current_user: dict = Depends(get_current_user)):
     return {"marked": marked}
 
 
+@app.post("/jobs/reset-stuck")
+def reset_stuck_jobs(current_user: dict = Depends(get_current_user)):
+    """Reset jobs stuck in 'in_progress' back to null so they can be retried."""
+    import sqlite3
+    uid = current_user["uid"]
+    db_path = DATA_ROOT / uid / "applypilot.db"
+    if not db_path.exists():
+        return {"reset": 0}
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.execute("UPDATE jobs SET apply_status = NULL WHERE apply_status = 'in_progress'")
+    reset = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"reset": reset}
+
+
 @app.post("/jobs/delete")
 def delete_jobs(data: dict, current_user: dict = Depends(get_current_user)):
     """Delete specific jobs by URL."""
