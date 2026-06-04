@@ -751,9 +751,9 @@ def force_sync(current_user: dict = Depends(get_current_user)):
     conn = sqlite3.connect(str(db_path), timeout=5)
     conn.row_factory = sqlite3.Row
     _init_tables(conn)
-    before = conn.execute("SELECT COUNT(*) FROM tracking").fetchone()[0]
+    before = conn.execute("SELECT COUNT(*) FROM job_pipeline").fetchone()[0]
     _auto_sync(conn)
-    after = conn.execute("SELECT COUNT(*) FROM tracking").fetchone()[0]
+    after = conn.execute("SELECT COUNT(*) FROM job_pipeline").fetchone()[0]
     conn.close()
     return {"synced": after - before, "total": after}
 

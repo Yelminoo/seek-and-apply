@@ -286,6 +286,7 @@ def run_pipeline(
         raise HTTPException(status_code=409, detail="Pipeline already running. Stop it first.")
 
     runner = JobRunner(user_id=uid, user_dir=user_dir)
+    runner._running = True  # pre-mark so SSE /pipeline/logs doesn't exit before background task starts
     _runners[uid] = runner
     background_tasks.add_task(runner.run_pipeline, req.stages, req.min_score, req.workers, req.validation, req.url_filter or None)
 
@@ -441,6 +442,7 @@ def run_apply(
         raise HTTPException(status_code=409, detail="Pipeline already running. Stop it first.")
 
     runner = JobRunner(user_id=uid, user_dir=user_dir)
+    runner._running = True  # pre-mark so SSE /pipeline/logs doesn't exit before background task starts
     _runners[uid] = runner
     background_tasks.add_task(
         runner.run_apply, req.limit, req.min_score, req.workers,
