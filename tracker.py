@@ -180,7 +180,15 @@ def _add_note(conn, entity_type: str, entity_id: int, note: str, note_type: str 
 
 def _job_info(conn, url: str) -> dict:
     row = conn.execute(
-        "SELECT title, location, site, fit_score, salary FROM jobs WHERE url = ?", (url,)
+        """SELECT title, location, site, fit_score, salary,
+           (full_description IS NOT NULL) AS has_description,
+           (tailored_resume_path IS NOT NULL
+            AND tailored_resume_path != '__FILTERED__') AS has_tailored,
+           (cover_letter_path IS NOT NULL
+            AND cover_letter_path != '__FILTERED__') AS has_cover,
+           (application_url IS NOT NULL) AS has_apply_url
+           FROM jobs WHERE url = ?""",
+        (url,),
     ).fetchone()
     return dict(row) if row else {}
 
@@ -210,6 +218,10 @@ def _enrich_app_rows(conn, rows: list) -> list:
         d["rounds_total"]   = len(rounds)
         d["rounds_passed"]  = sum(1 for x in rounds if x["outcome"] == "passed")
         d["rounds_pending"] = sum(1 for x in rounds if x["outcome"] == "pending")
+        # Total applications for the same job (shows when apply-again has been used)
+        d["app_count"] = conn.execute(
+            "SELECT COUNT(*) FROM applications WHERE pipeline_id = ?", (d["pipeline_id"],)
+        ).fetchone()[0] if d.get("pipeline_id") else 1
         out.append(d)
     return out
 

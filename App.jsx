@@ -1639,6 +1639,17 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
               ⚡ Auto Apply {selected.size}
             </button>
             <button
+              onClick={async () => {
+                const urls = [...selected];
+                try {
+                  const r = await api("POST", "/tracker/pipeline/add", { urls }, token);
+                  alert(`Added ${r.added} job${r.added!==1?"s":""} to Tracker Queue (already queued ones skipped).`);
+                } catch (e) { alert("Failed: " + e.message); }
+              }}
+              style={{ ...css.btn("outline"), padding:"5px 12px", fontSize:11, borderColor:"#a78bfa", color:"#a78bfa" }}>
+              ⬡ Add to Tracker
+            </button>
+            <button
               onClick={() => setApplyForm(f => ({ ...f, show:!f.show }))}
               style={{ ...css.btn(applyForm.show ? "primary" : "outline"), padding:"5px 12px", fontSize:11, borderColor:C.accent }}>
               ✓ Mark Applied
@@ -2135,7 +2146,7 @@ const BOARD_STAGES = [
   { id:"applied",   label:"Applied",       color:C.blue,    type:"app"      },
   { id:"response",  label:"Response",      color:C.warn,    type:"app"      },
   { id:"interview", label:"Interview",     color:"#a78bfa", type:"app"      },
-  { id:"offer",     label:"Offer",         color:"#fb923c", type:"app"      },
+  { id:"offer",     label:"Offer / Won",   color:"#fb923c", type:"app"      },
   { id:"rejected",  label:"Rejected",      color:C.danger,  type:"mixed"    },
   { id:"canceled",  label:"Canceled",      color:C.muted,   type:"app"      },
 ];
@@ -2422,6 +2433,19 @@ function OfferSection({ offer, token, onUpdate }) {
   );
 }
 
+function PipelineBadge({ active, label }) {
+  return (
+    <span style={{
+      fontSize:9, padding:"1px 5px", borderRadius:3, lineHeight:1.4,
+      background: active ? C.accent+"1a" : "transparent",
+      color: active ? C.accent : C.muted+"88",
+      border:`1px solid ${active ? C.accent+"44" : C.border}`,
+    }}>
+      {active ? "✓" : "–"} {label}
+    </span>
+  );
+}
+
 function PipelineCard({ record, stageColor, onClick }) {
   return (
     <div onClick={onClick} style={{
@@ -2430,17 +2454,30 @@ function PipelineCard({ record, stageColor, onClick }) {
     }}
       onMouseEnter={e => { e.currentTarget.style.background="#1a1d26"; }}
       onMouseLeave={e => { e.currentTarget.style.background=C.surface; }}>
-      <div style={{ fontSize:12, fontWeight:600, color:C.text, lineHeight:1.3, marginBottom:4,
+
+      <div style={{ fontSize:12, fontWeight:600, color:C.text, lineHeight:1.3, marginBottom:5,
         overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
         {record.title || record.job_url?.split("/").pop() || "Untitled"}
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:4 }}>
-        <span style={{ fontSize:10, color:C.muted }}>{record.site||"—"}</span>
-        <ScoreBadge score={record.fit_score} />
+
+      <div style={{ fontSize:10, color:C.muted, marginBottom:6 }}>
+        {record.site||"—"}{record.location ? ` · ${record.location}` : ""}
       </div>
-      <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>
+
+      {/* Pipeline stage progress */}
+      <div style={{ display:"flex", gap:3, flexWrap:"wrap", marginBottom:5 }}>
+        <PipelineBadge active={!!record.has_description} label="enriched" />
+        <ScoreBadge score={record.fit_score} />
+        <PipelineBadge active={!!record.has_tailored}    label="tailored" />
+        <PipelineBadge active={!!record.has_cover}       label="cover"    />
+        <PipelineBadge active={!!record.has_apply_url}   label="URL"      />
+      </div>
+
+      <div style={{ fontSize:10, color:C.muted }}>
         {daysAgo(record.updated_at)}
-        {record.app_count > 0 ? <span style={{ marginLeft:6, color:C.blue }}>{record.app_count} app{record.app_count>1?"s":""}</span> : null}
+        {record.app_count > 0
+          ? <span style={{ marginLeft:6, color:C.blue }}>{record.app_count} app{record.app_count>1?"s":""}</span>
+          : null}
       </div>
     </div>
   );
@@ -2454,22 +2491,35 @@ function ApplicationCard({ record, stageColor, onClick }) {
     }}
       onMouseEnter={e => { e.currentTarget.style.background="#1a1d26"; }}
       onMouseLeave={e => { e.currentTarget.style.background=C.surface; }}>
+
       <div style={{ fontSize:12, fontWeight:600, color:C.text, lineHeight:1.3, marginBottom:4,
         overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
         {record.title||"Untitled"}
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
         <span style={{ fontSize:10, color:C.muted }}>{record.site||"—"}</span>
         <ScoreBadge score={record.fit_score} />
       </div>
-      <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>
-        {record.channel ? <span style={{ marginRight:6 }}>{record.channel}</span> : null}
+
+      <div style={{ fontSize:10, color:C.muted, marginBottom:3 }}>
+        {record.channel
+          ? <span style={{ color:C.blue, marginRight:6 }}>{record.channel}</span>
+          : null}
         {daysAgo(record.applied_at)}
       </div>
+
       {record.rounds_total > 0 ? (
         <div style={{ fontSize:10, color:"#a78bfa", marginTop:3 }}>
           {record.rounds_passed}/{record.rounds_total} rounds passed
           {record.rounds_pending > 0 ? ` · ${record.rounds_pending} pending` : ""}
+        </div>
+      ) : null}
+
+      {/* Multiple attempt indicator — shown when apply-again has been used */}
+      {record.app_count > 1 ? (
+        <div style={{ fontSize:9, color:C.warn, marginTop:3 }}>
+          ↺ attempt {record.app_count}
         </div>
       ) : null}
     </div>
