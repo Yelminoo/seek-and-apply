@@ -1879,7 +1879,20 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
                             ✉ CL
                           </button>
                         ) : null}
-                        {!job.tailored_resume_path && !job.cover_letter_path ? (
+                        {/* Manual apply button — shown when auto-apply failed/stuck/captcha */}
+                        {(job.apply_status === "failed" || job.apply_status === "in_progress"
+                          || job.apply_status === "captcha" || job.apply_status === "manual") ? (
+                          <a href={job.url} target="_blank" rel="noreferrer"
+                            title="Auto-apply failed — open job page to apply manually"
+                            style={{ background:"#fb923c22", border:"1px solid #fb923c44", borderRadius:4,
+                              color:"#fb923c", cursor:"pointer", fontSize:10, fontFamily:"inherit", padding:"3px 7px",
+                              textDecoration:"none", display:"inline-block" }}>
+                            ↗ Apply
+                          </a>
+                        ) : null}
+                        {!job.tailored_resume_path && !job.cover_letter_path
+                          && job.apply_status !== "failed" && job.apply_status !== "in_progress"
+                          && job.apply_status !== "captcha" && job.apply_status !== "manual" ? (
                           <span style={{ color:C.border }}>—</span>
                         ) : null}
                       </div>
@@ -2491,10 +2504,15 @@ function PipelineBadge({ active, label }) {
 
 function PipelineCard({ record, stageColor, onClick }) {
   return (
-    <div onClick={onClick} style={{
-      ...css.card, padding:"10px 12px", cursor:"pointer",
-      borderLeft:`3px solid ${stageColor}`, transition:"background 0.15s",
-    }}
+    <div draggable onClick={onClick}
+      onDragStart={e => {
+        e.dataTransfer.setData("ap_drag", JSON.stringify({type:"pipeline", id:record.id, stage:record.stage}));
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      style={{
+        ...css.card, padding:"10px 12px", cursor:"grab",
+        borderLeft:`3px solid ${stageColor}`, transition:"background 0.15s",
+      }}
       onMouseEnter={e => { e.currentTarget.style.background="#1a1d26"; }}
       onMouseLeave={e => { e.currentTarget.style.background=C.surface; }}>
 
@@ -2528,10 +2546,15 @@ function PipelineCard({ record, stageColor, onClick }) {
 
 function ApplicationCard({ record, stageColor, onClick }) {
   return (
-    <div onClick={onClick} style={{
-      ...css.card, padding:"10px 12px", cursor:"pointer",
-      borderLeft:`3px solid ${stageColor}`, transition:"background 0.15s",
-    }}
+    <div draggable onClick={onClick}
+      onDragStart={e => {
+        e.dataTransfer.setData("ap_drag", JSON.stringify({type:"app", id:record.id, stage:record.app_stage}));
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      style={{
+        ...css.card, padding:"10px 12px", cursor:"grab",
+        borderLeft:`3px solid ${stageColor}`, transition:"background 0.15s",
+      }}
       onMouseEnter={e => { e.currentTarget.style.background="#1a1d26"; }}
       onMouseLeave={e => { e.currentTarget.style.background=C.surface; }}>
 
@@ -2928,6 +2951,7 @@ function TrackerTab({ token }) {
   const [loading, setLoading]       = useState(true);
   const [drawerType, setDrawerType] = useState(null);
   const [drawerId, setDrawerId]     = useState(null);
+  const [dragOver, setDragOver]     = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2947,6 +2971,29 @@ function TrackerTab({ token }) {
   const openPipeline = (id) => { setDrawerType("pipeline"); setDrawerId(id); };
   const openApp      = (id) => { setDrawerType("app");      setDrawerId(id); };
   const closeDrawer  = ()   => { setDrawerType(null);       setDrawerId(null); };
+
+  const handleDrop = useCallback(async (drag, toStage) => {
+    const { type, id, stage: fromStage } = drag;
+    if (fromStage === toStage) return;
+    try {
+      if (type === "pipeline") {
+        if      (fromStage==="queue"     && toStage==="qualified") await api("POST",`/tracker/pipeline/${id}/qualify`,    {},token);
+        else if (fromStage==="qualified" && toStage==="ready")     await api("POST",`/tracker/pipeline/${id}/ready`,      {},token);
+        else if (fromStage==="ready"     && toStage==="applied")   await api("POST",`/tracker/pipeline/${id}/apply`, {channel:"portal"},token);
+        else if ((fromStage==="qualified"||fromStage==="ready") && toStage==="queue") await api("POST",`/tracker/pipeline/${id}/send-back`,{},token);
+        else if (toStage==="rejected")                             await api("POST",`/tracker/pipeline/${id}/discard`,    {},token);
+        else return;
+      } else {
+        if      (fromStage==="applied"  && toStage==="response")  await api("POST",`/tracker/application/${id}/response`,{},token);
+        else if (fromStage==="response" && toStage==="interview")  await api("POST",`/tracker/application/${id}/interview`,{},token);
+        else if ((fromStage==="response"||fromStage==="interview") && toStage==="offer") await api("POST",`/tracker/application/${id}/offer`,{},token);
+        else if (toStage==="rejected")                             await api("POST",`/tracker/application/${id}/reject`,  {},token);
+        else if (toStage==="canceled")                             await api("POST",`/tracker/application/${id}/cancel`,  {},token);
+        else return;
+      }
+      load();
+    } catch (err) { console.error("Drop failed:", err); }
+  }, [token, load]);
 
   return (
     <div style={{ position:"relative" }}>
@@ -2982,12 +3029,25 @@ function TrackerTab({ token }) {
         <div style={{ display:"flex", gap:12, overflowX:"auto", paddingBottom:16, alignItems:"flex-start" }}>
           {BOARD_STAGES.map(stage => {
             const items = board[stage.id] || [];
+            const isOver = dragOver === stage.id;
             return (
-              <div key={stage.id} style={{ minWidth:210, width:210, flexShrink:0 }}>
+              <div key={stage.id} style={{ minWidth:210, width:210, flexShrink:0, borderRadius:8,
+                outline: isOver ? `2px dashed ${stage.color}` : "2px solid transparent",
+                transition:"outline 0.12s",
+              }}
+                onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect="move"; setDragOver(stage.id); }}
+                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+                onDrop={async e => {
+                  e.preventDefault(); setDragOver(null);
+                  try { const d=JSON.parse(e.dataTransfer.getData("ap_drag")); await handleDrop(d,stage.id); }
+                  catch(_){}
+                }}>
                 <div style={{
                   padding:"8px 12px", borderRadius:"6px 6px 0 0",
-                  background:stage.color+"22", borderBottom:`2px solid ${stage.color}`,
+                  background: isOver ? stage.color+"44" : stage.color+"22",
+                  borderBottom:`2px solid ${stage.color}`,
                   display:"flex", justifyContent:"space-between", alignItems:"center",
+                  transition:"background 0.12s",
                 }}>
                   <span style={{ fontSize:11, fontWeight:700, color:stage.color, letterSpacing:"0.06em" }}>
                     {stage.label.toUpperCase()}
@@ -2998,7 +3058,10 @@ function TrackerTab({ token }) {
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:8, paddingTop:8, minHeight:80 }}>
                   {items.length === 0 ? (
-                    <div style={{ fontSize:11, color:C.muted, textAlign:"center", padding:"16px 0" }}>empty</div>
+                    <div style={{ fontSize:11, color: isOver ? stage.color : C.muted, textAlign:"center", padding:"16px 0",
+                      transition:"color 0.12s" }}>
+                      {isOver ? "Drop here" : "empty"}
+                    </div>
                   ) : items.map(item => (
                     item.app_stage ? (
                       <ApplicationCard key={`app-${item.id}`} record={item} stageColor={stage.color} onClick={() => openApp(item.id)} />
