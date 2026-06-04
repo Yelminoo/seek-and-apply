@@ -451,6 +451,47 @@ def run_apply(
     return {"ok": True, "job_id": runner.job_id}
 
 
+@app.get("/apply/logs")
+def list_apply_logs(current_user: dict = Depends(get_current_user)):
+    """List per-job Claude session log files from the most recent apply run."""
+    uid = current_user["uid"]
+    logs_dir = DATA_ROOT / uid / "logs"
+    if not logs_dir.exists():
+        return []
+    files = sorted(logs_dir.glob("claude_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [
+        {
+            "name": f.name,
+            "size": f.stat().st_size,
+            "modified": f.stat().st_mtime,
+        }
+        for f in files[:50]
+    ]
+
+
+@app.get("/apply/logs/{filename}")
+def read_apply_log(filename: str, current_user: dict = Depends(get_current_user)):
+    """Return the content of a specific Claude session log file."""
+    uid = current_user["uid"]
+    # Sanitise: only allow the filename component, no path traversal
+    safe_name = Path(filename).name
+    log_path = DATA_ROOT / uid / "logs" / safe_name
+    if not log_path.exists() or log_path.suffix != ".txt":
+        raise HTTPException(status_code=404, detail="Log not found")
+    return {"name": safe_name, "content": log_path.read_text(encoding="utf-8", errors="replace")}
+
+
+@app.get("/apply/worker-logs")
+def list_worker_logs(current_user: dict = Depends(get_current_user)):
+    """List worker-N.log files (running conversation logs per worker)."""
+    uid = current_user["uid"]
+    logs_dir = DATA_ROOT / uid / "logs"
+    if not logs_dir.exists():
+        return []
+    files = sorted(logs_dir.glob("worker-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [{"name": f.name, "size": f.stat().st_size} for f in files]
+
+
 @app.post("/jobs/mark-applied")
 def mark_applied(data: dict, current_user: dict = Depends(get_current_user)):
     """Mark jobs as manually applied. Accepts channel + resume_version for tracker records."""

@@ -2184,6 +2184,82 @@ function ApplyTab({ token }) {
           </div>
         </div>
       )}
+
+      {/* Session log browser */}
+      <ApplyLogBrowser token={token} />
+    </div>
+  );
+}
+
+function ApplyLogBrowser({ token }) {
+  const [files, setFiles]       = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [content, setContent]   = useState("");
+  const [loading, setLoading]   = useState(false);
+
+  const loadList = () =>
+    api("GET", "/apply/logs", null, token).then(setFiles).catch(() => setFiles([]));
+
+  useEffect(() => { loadList(); }, [token]);
+
+  const openFile = async (name) => {
+    setSelected(name); setLoading(true);
+    try {
+      const r = await api("GET", `/apply/logs/${encodeURIComponent(name)}`, null, token);
+      setContent(r.content);
+    } catch { setContent("Could not load file."); }
+    finally { setLoading(false); }
+  };
+
+  if (!files) return null;
+  if (files.length === 0) return null;
+
+  return (
+    <div style={css.card}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+        <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>
+          Session Logs — Claude apply conversations
+        </div>
+        <button onClick={loadList} style={{ ...css.btn("outline"), fontSize:10, padding:"3px 10px" }}>↻</button>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"240px 1fr", gap:12 }}>
+        {/* File list */}
+        <div style={{ display:"flex", flexDirection:"column", gap:4, maxHeight:360, overflowY:"auto" }}>
+          {files.map(f => {
+            const isActive = f.name === selected;
+            const ts = new Date(f.modified * 1000);
+            // parse job info from filename: claude_YYYYMMDD_HHMMSS_w0_site.txt
+            const parts = f.name.replace(".txt","").split("_");
+            const siteLabel = parts.slice(4).join("_") || "unknown";
+            return (
+              <div key={f.name} onClick={() => openFile(f.name)} style={{
+                padding:"7px 10px", borderRadius:6, cursor:"pointer", fontSize:11,
+                background: isActive ? C.accentDim : "transparent",
+                border:`1px solid ${isActive ? C.accent+"44" : C.border}`,
+                color: isActive ? C.accent : C.text,
+              }}>
+                <div style={{ fontWeight:600, marginBottom:2 }}>{siteLabel}</div>
+                <div style={{ fontSize:10, color:C.muted }}>
+                  {ts.toLocaleString()} · {(f.size / 1024).toFixed(1)} KB
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* File content */}
+        <div style={{
+          background:"#08090d", borderRadius:6, padding:12,
+          fontSize:11, lineHeight:1.7, maxHeight:360, overflowY:"auto",
+          color: C.muted, whiteSpace:"pre-wrap", wordBreak:"break-word",
+        }}>
+          {!selected
+            ? <span style={{ color:C.muted }}>← Select a session to view the Claude conversation log</span>
+            : loading ? <span>Loading…</span>
+            : content}
+        </div>
+      </div>
     </div>
   );
 }
