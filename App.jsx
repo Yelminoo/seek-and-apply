@@ -566,6 +566,13 @@ function SetupTab({ token }) {
     api("GET", "/setup/status", null, token).then(s => {
       setStatus(s);
       if (s.profile) setProfile(p => ({ ...p, ...s.profile }));
+      if (s.env_keys) setEnvKeys(e => ({
+        ...e,
+        GEMINI_API_KEY:    s.env_keys.GEMINI_API_KEY    || "",
+        OPENAI_API_KEY:    s.env_keys.OPENAI_API_KEY    || "",
+        CAPSOLVER_API_KEY: s.env_keys.CAPSOLVER_API_KEY || "",
+        LLM_URL:           s.env_keys.LLM_URL           || "",
+      }));
       const done = new Set();
       if (s.has_profile) { ["personal","work_auth","compensation","experience","skills"].forEach(id => done.add(id)); }
       if (s.env_keys?.GEMINI_API_KEY || s.env_keys?.OPENAI_API_KEY) done.add("api_keys");
@@ -573,7 +580,18 @@ function SetupTab({ token }) {
       if (s.has_searches) done.add("searches");
       setCompletedSteps(done);
     });
-    api("GET", "/setup/searches", null, token).then(s => setSearches(s.yaml));
+    api("GET", "/setup/searches", null, token).then(s => {
+      if (!s.yaml) return;
+      setSearches(s.yaml);
+      // restore chip selections from saved YAML
+      const queries = [...s.yaml.matchAll(/^\s*- query:\s*"([^"]+)"/gm)].map(m => m[1]);
+      const locs    = [...s.yaml.matchAll(/^\s*- location:\s*"([^"]+)"/gm)].map(m => m[1]);
+      const sites   = [...s.yaml.matchAll(/^\s*- (indeed|linkedin)\s*$/gm)].map(m => m[1]);
+      if (queries.length) setSelTitles(queries);
+      if (locs.length)    setSelLocations(locs);
+      if (sites.length)   setSelSites(sites);
+      setYamlDirty(true); // preserve loaded YAML, don't auto-regenerate
+    });
   }, [token]);
 
   // Regenerate YAML whenever selections change (unless user manually edited it)
@@ -581,12 +599,12 @@ function SetupTab({ token }) {
     if (!yamlDirty) setSearches(buildSearchYaml(selTitles, selLocations, selSites));
   }, [selLocations, selTitles, selSites, yamlDirty]);
 
-  const toggleLoc   = (v) => setSelLocations(p => p.includes(v) ? p.filter(x => x !== v) : [...p, v]);
-  const toggleTitle = (v) => setSelTitles(p => p.includes(v) ? p.filter(x => x !== v) : [...p, v]);
-  const toggleSite  = (v) => setSelSites(p => p.includes(v) ? p.filter(x => x !== v) : [...p, v]);
+  const toggleLoc   = (v) => { setYamlDirty(false); setSelLocations(p => p.includes(v) ? p.filter(x => x !== v) : [...p, v]); };
+  const toggleTitle = (v) => { setYamlDirty(false); setSelTitles(p => p.includes(v) ? p.filter(x => x !== v) : [...p, v]); };
+  const toggleSite  = (v) => { setYamlDirty(false); setSelSites(p => p.includes(v) ? p.filter(x => x !== v) : [...p, v]); };
   const addCustomTitle = () => {
     const t = customTitle.trim();
-    if (t && !selTitles.includes(t)) setSelTitles(p => [t, ...p]);
+    if (t && !selTitles.includes(t)) { setYamlDirty(false); setSelTitles(p => [t, ...p]); }
     setCustomTitle("");
   };
 

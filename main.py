@@ -133,7 +133,7 @@ def setup_status(current_user: dict = Depends(get_current_user)):
             line = line.strip()
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
-                env_keys[k.strip()] = bool(v.strip())
+                env_keys[k.strip()] = v.strip()
 
     return {
         "has_profile": profile_path.exists(),
