@@ -7,8 +7,10 @@ Logs are buffered in memory and streamed via SSE.
 
 import json as _json
 import os
+import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -17,6 +19,28 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# Resolve applypilot full path at import time so subprocess never has to search PATH
+def _find_applypilot() -> str:
+    # 1. Already on system PATH
+    found = shutil.which("applypilot")
+    if found:
+        return found
+    # 2. Python's own Scripts directory (pip install --user or venv)
+    for scripts in [
+        Path(sys.prefix) / "Scripts",
+        Path(sys.prefix) / "bin",
+        Path(sys.executable).parent,
+    ]:
+        candidate = scripts / "applypilot.exe"
+        if candidate.exists():
+            return str(candidate)
+        candidate = scripts / "applypilot"
+        if candidate.exists():
+            return str(candidate)
+    return "applypilot"  # fall back, will surface FileNotFoundError clearly
+
+APPLYPILOT = _find_applypilot()
 
 
 class JobRunner:
@@ -147,8 +171,15 @@ class JobRunner:
 
     def _make_env(self) -> dict:
         """Build subprocess env with APPLYPILOT_DIR pointing to this user's dir."""
+        import sys as _sys
         env = os.environ.copy()
         env["APPLYPILOT_DIR"] = str(self.user_dir)
+
+        # Ensure Python's Scripts dir is on PATH so applypilot.exe can be found
+        scripts_dir = str(Path(_sys.prefix) / "Scripts")
+        path = env.get("PATH", "")
+        if scripts_dir.lower() not in path.lower():
+            env["PATH"] = scripts_dir + os.pathsep + path
 
         # Load user's .env file into the environment
         env_file = self.user_dir / ".env"
@@ -453,7 +484,7 @@ class JobRunner:
             blocked = self._block_non_selected(["score"], failed_urls)
             try:
                 cmd = [
-                    "applypilot", "run",
+                    APPLYPILOT, "run",
                     "--min-score", str(min_score),
                     "--workers", str(workers),
                     "--validation", validation,
@@ -479,6 +510,34 @@ class JobRunner:
             )
             self._reset_error_scores(still_failed)
 
+    def _start_heartbeat(self) -> None:
+        """Log a '... still running' line every 15s so the UI doesn't look frozen."""
+        def _beat():
+            secs = 0
+            while self._running:
+                time.sleep(15)
+                if not self._running:
+                    break
+                secs += 15
+                mins, s = divmod(secs, 60)
+                self._append_log(f"[ApplyPilot Server] ⏱ Still running... {mins}m {s:02d}s elapsed")
+        t = threading.Thread(target=_beat, daemon=True)
+        t.start()
+
+    def _patch_results_per_site(self, n: int) -> None:
+        """Overwrite results_per_site in the user's searches.yaml."""
+        import re as _re
+        path = self.user_dir / "searches.yaml"
+        if not path.exists():
+            return
+        text = path.read_text(encoding="utf-8")
+        if _re.search(r"results_per_site\s*:", text):
+            text = _re.sub(r"(results_per_site\s*:\s*)\d+", rf"\g<1>{n}", text)
+        else:
+            text += f"\ndefaults:\n  results_per_site: {n}\n"
+        path.write_text(text, encoding="utf-8")
+        self._append_log(f"[ApplyPilot Server] Job limit: results_per_site set to {n}")
+
     def run_pipeline(
         self,
         stages: list[str],
@@ -486,6 +545,7 @@ class JobRunner:
         workers: int = 1,
         validation: str = "normal",
         url_filter: list[str] = None,
+        results_per_site: int = 0,
     ):
         """Run pipeline stages in a background thread."""
         self._running = True
@@ -499,9 +559,14 @@ class JobRunner:
             # Clean up any sentinels left by a previously interrupted URL-filtered run
             self._clear_sentinels()
 
+            self._start_heartbeat()
             self._append_log(f"[ApplyPilot Server] Starting pipeline: {stages}")
             self._append_log(f"[ApplyPilot Server] User dir: {self.user_dir}")
             self._append_log(f"[ApplyPilot Server] Min score: {min_score} | Workers: {workers}")
+
+            run_discover = "all" in stages or "discover" in stages
+            if results_per_site > 0 and run_discover:
+                self._patch_results_per_site(results_per_site)
             if url_filter:
                 self._append_log(f"[ApplyPilot Server] Job filter: {len(url_filter)} URL(s)")
             self._append_log("")
@@ -517,7 +582,7 @@ class JobRunner:
                 blocked = self._block_non_selected(stages, url_filter)
 
             cmd = [
-                "applypilot", "run",
+                APPLYPILOT, "run",
                 "--min-score", str(min_score),
                 "--workers", str(workers),
                 "--validation", validation,
@@ -679,7 +744,7 @@ class JobRunner:
                     if not self._running:
                         break
                     self._append_log(f"[ApplyPilot Server] [{i}/{total}] → {url[:80]}")
-                    cmd = ["applypilot", "apply", "--url", url] + _base_flags()
+                    cmd = [APPLYPILOT, "apply", "--url", url] + _base_flags()
                     self._run_cmd(cmd)
                     self._append_log("")
 
@@ -687,7 +752,7 @@ class JobRunner:
 
             else:
                 cmd = [
-                    "applypilot", "apply",
+                    APPLYPILOT, "apply",
                     "--limit",     str(limit),
                     "--min-score", str(min_score),
                     "--workers",   str(workers),
@@ -721,7 +786,7 @@ def check_apply_prereqs(user_dir: Path, min_score: int = 1) -> dict:
     ]
     chrome_ok = any(Path(p).exists() for p in chrome_candidates)
 
-    tailored = ready = ready_any_score = applied = failed = 0
+    tailored = ready = ready_any_score = applied = failed = stuck = maxed = 0
     max_score = min_available_score = None
     db_path = user_dir / "applypilot.db"
     if db_path.exists():
@@ -882,7 +947,7 @@ def list_jobs_for_user(user_dir: Path, stage: str = "discovered", limit: int = 5
         rows = conn.execute(
             f"SELECT url, title, location, site, salary, fit_score, "
             f"apply_status, applied_at, apply_attempts, "
-            f"tailored_resume_path, cover_letter_path, discovered_at, "
+            f"tailored_resume_path, cover_letter_path, discovered_at, date_posted, "
             f"(full_description IS NOT NULL) AS has_description, "
             f"(application_url IS NOT NULL) AS has_apply_url "
             f"FROM jobs WHERE {where} "

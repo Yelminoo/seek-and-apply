@@ -281,14 +281,28 @@ def run_pipeline(
     if not (user_dir / "resume.txt").exists():
         raise HTTPException(status_code=400, detail="Upload resume first")
 
-    # Kill existing runner for this user if running
+    # Stop any existing runner before starting a new one
     if uid in _runners and _runners[uid].is_running():
-        raise HTTPException(status_code=409, detail="Pipeline already running. Stop it first.")
+        _runners[uid].stop()
+        import time as _time
+        for _ in range(30):
+            if not _runners[uid].is_running():
+                break
+            _time.sleep(0.1)
 
     runner = JobRunner(user_id=uid, user_dir=user_dir)
-    runner._running = True  # pre-mark so SSE /pipeline/logs doesn't exit before background task starts
-    _runners[uid] = runner
-    background_tasks.add_task(runner.run_pipeline, req.stages, req.min_score, req.workers, req.validation, req.url_filter or None)
+    try:
+        runner._running = True
+        _runners[uid] = runner
+        background_tasks.add_task(
+            runner.run_pipeline,
+            req.stages, req.min_score, req.workers, req.validation,
+            req.url_filter or None, req.results_per_site,
+        )
+    except Exception:
+        runner._running = False
+        _runners.pop(uid, None)
+        raise
 
     return {"ok": True, "job_id": runner.job_id}
 
@@ -299,6 +313,18 @@ def stop_pipeline(current_user: dict = Depends(get_current_user)):
     runner = _runners.get(uid)
     if runner:
         runner.stop()
+    return {"ok": True}
+
+
+@app.post("/pipeline/reset")
+def reset_pipeline(current_user: dict = Depends(get_current_user)):
+    """Force-clear any stuck/orphaned pipeline state for this user."""
+    uid = current_user["uid"]
+    runner = _runners.get(uid)
+    if runner:
+        runner.stop()
+        runner._running = False
+    _runners.pop(uid, None)
     return {"ok": True}
 
 

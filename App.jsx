@@ -547,7 +547,8 @@ function buildSearchYaml(titles, locations, sites) {
 
 function SetupTab({ token }) {
   const [profile, setProfile]   = useState(PROFILE_DEFAULTS);
-  const [envKeys, setEnvKeys]   = useState({ GEMINI_API_KEY:"", OPENAI_API_KEY:"", CAPSOLVER_API_KEY:"", LLM_URL:"" });
+  const [envKeys, setEnvKeys]   = useState({ GEMINI_API_KEY:"", OPENAI_API_KEY:"", CAPSOLVER_API_KEY:"", LLM_URL:"", LLM_MODEL:"" });
+  const [llmMode, setLlmMode]   = useState("paid"); // "free" | "paid"
   const [searches, setSearches] = useState("");
   const [status, setStatus]     = useState(null);
   const [saving, setSaving]     = useState("");
@@ -566,16 +567,20 @@ function SetupTab({ token }) {
     api("GET", "/setup/status", null, token).then(s => {
       setStatus(s);
       if (s.profile) setProfile(p => ({ ...p, ...s.profile }));
-      if (s.env_keys) setEnvKeys(e => ({
-        ...e,
-        GEMINI_API_KEY:    s.env_keys.GEMINI_API_KEY    || "",
-        OPENAI_API_KEY:    s.env_keys.OPENAI_API_KEY    || "",
-        CAPSOLVER_API_KEY: s.env_keys.CAPSOLVER_API_KEY || "",
-        LLM_URL:           s.env_keys.LLM_URL           || "",
-      }));
+      if (s.env_keys) {
+        setEnvKeys(e => ({
+          ...e,
+          GEMINI_API_KEY:    s.env_keys.GEMINI_API_KEY    || "",
+          OPENAI_API_KEY:    s.env_keys.OPENAI_API_KEY    || "",
+          CAPSOLVER_API_KEY: s.env_keys.CAPSOLVER_API_KEY || "",
+          LLM_URL:           s.env_keys.LLM_URL           || "",
+          LLM_MODEL:         s.env_keys.LLM_MODEL         || "",
+        }));
+        if (s.env_keys.LLM_URL) setLlmMode("free");
+      }
       const done = new Set();
       if (s.has_profile) { ["personal","work_auth","compensation","experience","skills"].forEach(id => done.add(id)); }
-      if (s.env_keys?.GEMINI_API_KEY || s.env_keys?.OPENAI_API_KEY) done.add("api_keys");
+      if (s.env_keys?.GEMINI_API_KEY || s.env_keys?.OPENAI_API_KEY || s.env_keys?.LLM_URL) done.add("api_keys");
       if (s.has_resume_txt) done.add("resume");
       if (s.has_searches) done.add("searches");
       setCompletedSteps(done);
@@ -608,6 +613,21 @@ function SetupTab({ token }) {
     setCustomTitle("");
   };
 
+  const switchLlmMode = (mode) => {
+    setLlmMode(mode);
+    if (mode === "free") {
+      setEnvKeys(e => ({
+        ...e,
+        LLM_URL:           e.LLM_URL   || "http://localhost:11434/v1",
+        LLM_MODEL:         e.LLM_MODEL || "llama3.2",
+        GEMINI_API_KEY:    "",
+        OPENAI_API_KEY:    "",
+      }));
+    } else {
+      setEnvKeys(e => ({ ...e, LLM_URL:"", LLM_MODEL:"" }));
+    }
+  };
+
   const flash = (text, ok = true) => { setMsg({ text, ok }); setTimeout(() => setMsg(null), 3500); };
   const markDone = (ids) => setCompletedSteps(prev => { const n = new Set(prev); [].concat(ids).forEach(id => n.add(id)); return n; });
 
@@ -632,7 +652,7 @@ function SetupTab({ token }) {
     setSaving("env");
     try {
       await api("POST", "/setup/env", envKeys, token);
-      if (envKeys.GEMINI_API_KEY || envKeys.OPENAI_API_KEY) markDone("api_keys");
+      if (envKeys.GEMINI_API_KEY || envKeys.OPENAI_API_KEY || envKeys.LLM_URL) markDone("api_keys");
       flash("✓ API keys saved");
       if (andNext) goNext();
     } catch (e) { flash("✗ " + e.message, false); }
@@ -800,10 +820,61 @@ function SetupTab({ token }) {
             )}
 
             {activeSection === "api_keys" && (
-              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-                {[["GEMINI_API_KEY","Gemini API Key (free — aistudio.google.com)"],["OPENAI_API_KEY","OpenAI API Key (optional)"],["CAPSOLVER_API_KEY","CapSolver API Key (optional, for CAPTCHAs)"],["LLM_URL","Local LLM URL (optional, e.g. http://localhost:11434/v1)"]].map(([k,l]) => (
-                  <Field key={k} label={l} value={envKeys[k]} onChange={v => setEnvKeys(e => ({ ...e, [k]:v }))} type="password" />
-                ))}
+              <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+                {/* Free / Paid toggle */}
+                <div style={{ display:"flex", gap:8 }}>
+                  {[["free","🆓 Free — Local AI (Ollama)","#4ade80"],["paid","💳 Paid — Cloud AI","#60a5fa"]].map(([m,l,col]) => (
+                    <button key={m} onClick={() => switchLlmMode(m)} style={{
+                      flex:1, padding:"10px 14px", borderRadius:6, fontSize:12, fontFamily:"inherit",
+                      cursor:"pointer", fontWeight: llmMode === m ? 700 : 400,
+                      background: llmMode === m ? col + "22" : "transparent",
+                      color: llmMode === m ? col : C.muted,
+                      border:`1px solid ${llmMode === m ? col : C.border}`,
+                      transition:"all 0.15s",
+                    }}>{l}</button>
+                  ))}
+                </div>
+
+                {llmMode === "free" && (
+                  <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                    <div style={{ background:C.accentDim, borderLeft:`3px solid ${C.accent}`, borderRadius:4, padding:"10px 14px", fontSize:11, color:C.text, lineHeight:1.8 }}>
+                      <strong>Ollama — free, runs entirely on your machine</strong><br/>
+                      1. Install from <strong>ollama.ai</strong><br/>
+                      2. Pull a model: <code style={{ background:"#ffffff18", padding:"1px 5px", borderRadius:3 }}>ollama pull llama3.2</code><br/>
+                      3. Ollama starts automatically on port 11434<br/>
+                      <span style={{ color:C.muted }}>Tip: use 3–4 workers since there's no rate limit.</span>
+                    </div>
+                    <Field label="Ollama URL" value={envKeys.LLM_URL} onChange={v => setEnvKeys(e => ({ ...e, LLM_URL:v }))} />
+                    <div>
+                      <label style={css.label}>Model</label>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6, margin:"6px 0 8px" }}>
+                        {["llama3.2","llama3.1","mistral","qwen2.5:7b","phi3","gemma2:2b","deepseek-r1:7b"].map(m => (
+                          <button key={m} onClick={() => setEnvKeys(e => ({ ...e, LLM_MODEL:m }))} style={{
+                            padding:"4px 10px", borderRadius:12, fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                            background: envKeys.LLM_MODEL === m ? C.accent : "transparent",
+                            color:      envKeys.LLM_MODEL === m ? "#0a0b0f" : C.muted,
+                            border:`1px solid ${envKeys.LLM_MODEL === m ? C.accent : C.border}`,
+                          }}>{m}</button>
+                        ))}
+                      </div>
+                      <input style={css.input} placeholder="or type model name..." value={envKeys.LLM_MODEL}
+                        onChange={e => setEnvKeys(k => ({ ...k, LLM_MODEL:e.target.value }))} />
+                    </div>
+                  </div>
+                )}
+
+                {llmMode === "paid" && (
+                  <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                    <div style={{ background:"#60a5fa11", borderLeft:`3px solid ${C.blue}`, borderRadius:4, padding:"10px 14px", fontSize:11, color:C.text, lineHeight:1.8 }}>
+                      <strong>Gemini</strong> is free at <strong>aistudio.google.com</strong> (15 requests/min).<br/>
+                      <strong>OpenAI</strong> optional — used only if no Gemini key is set.
+                    </div>
+                    <Field label="Gemini API Key (free)" value={envKeys.GEMINI_API_KEY} onChange={v => setEnvKeys(e => ({ ...e, GEMINI_API_KEY:v }))} type="password" />
+                    <Field label="OpenAI API Key (optional)" value={envKeys.OPENAI_API_KEY} onChange={v => setEnvKeys(e => ({ ...e, OPENAI_API_KEY:v }))} type="password" />
+                  </div>
+                )}
+
+                <Field label="CapSolver API Key (optional — bypasses CAPTCHAs)" value={envKeys.CAPSOLVER_API_KEY} onChange={v => setEnvKeys(e => ({ ...e, CAPSOLVER_API_KEY:v }))} type="password" />
               </div>
             )}
 
@@ -951,9 +1022,16 @@ function LlmRateInfo({ token }) {
   useEffect(() => {
     api("GET", "/setup/status", null, token).then(s => {
       const keys = s.env_keys || {};
-      if (keys.LLM_URL)        setInfo({ type:"local",  delay:0,   label:"Local LLM",    color:C.accent, tip:"No rate limit — running at full speed" });
-      else if (keys.GEMINI_API_KEY) setInfo({ type:"gemini", delay:4,   label:"Gemini (free)", color:C.warn,   tip:"4 s delay between calls — stays under 15 RPM free tier" });
-      else if (keys.OPENAI_API_KEY) setInfo({ type:"openai", delay:0.5, label:"OpenAI",        color:C.blue,   tip:"0.5 s delay — generous tier-1 limits" });
+      if (keys.LLM_URL) {
+        const isOllama = keys.LLM_URL.includes("11434") || keys.LLM_URL.toLowerCase().includes("ollama");
+        const model    = keys.LLM_MODEL || "local model";
+        setInfo({ type:"local", delay:0,
+          label: isOllama ? `Ollama (${model})` : `Local LLM (${model})`,
+          color: C.accent,
+          tip: `No rate limit — runs entirely on your machine. Use 3–4 workers for max speed.`,
+        });
+      } else if (keys.GEMINI_API_KEY) setInfo({ type:"gemini", delay:4,   label:"Gemini (free)", color:C.warn,   tip:"4 s delay between calls — stays under 15 RPM free tier" });
+      else if (keys.OPENAI_API_KEY)   setInfo({ type:"openai", delay:0.5, label:"OpenAI",        color:C.blue,   tip:"0.5 s delay — generous tier-1 limits" });
       else setInfo(null);
     }).catch(() => {});
   }, [token]);
@@ -1002,17 +1080,21 @@ function PipelineTab({ token, initialStages, initialUrls }) {
 
   useEffect(() => { if (initialStages) setSelectedStages(initialStages); }, [initialStages?.join(",")]);
   useEffect(() => { setUrlFilter(initialUrls || []); }, [initialUrls?.join(",")]);
-  const [minScore, setMinScore]   = useState(7);
-  const [workers, setWorkers]     = useState(1);
-  const [validation, setValidation] = useState("normal");
+  const [minScore, setMinScore]         = useState(7);
+  const [workers, setWorkers]           = useState(1);
+  const [validation, setValidation]     = useState("normal");
+  const [resultsPerSite, setResultsPerSite] = useState(10);
   const [pipelineStatus, setPipelineStatus] = useState(null);
-  const [logs, setLogs]   = useState([]);
-  const [error, setError] = useState("");
-  const logsEndRef = useRef(null);
+  const [logs, setLogs]         = useState([]);
+  const [error, setError]       = useState("");
+  const [elapsed, setElapsed]   = useState(0);
+  const [activeQuickRun, setActiveQuickRun] = useState(null); // label of last-clicked quick run
+  const logsEndRef   = useRef(null);
+  const streamingRef = useRef(false); // true while SSE reader is active
 
   const toggleStage = (s) => {
+    setActiveQuickRun(null);
     if (s === "all") { setSelectedStages(["all"]); return; }
-    // Clicking any individual stage always deselects "all" and toggles that stage
     setSelectedStages(prev => {
       const without = prev.filter(x => x !== "all");
       const next = without.includes(s) ? without.filter(x => x !== s) : [...without, s];
@@ -1026,37 +1108,66 @@ function PipelineTab({ token, initialStages, initialUrls }) {
   }, [token]);
 
   useEffect(() => { fetchStatus(); const id = setInterval(fetchStatus, 2000); return () => clearInterval(id); }, [fetchStatus]);
-  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
+  // auto-scroll removed — user scrolls manually
+
+  // Elapsed timer — ticks every second while running
+  useEffect(() => {
+    if (!pipelineStatus?.running) { setElapsed(0); return; }
+    const start = pipelineStatus.started_at ? new Date(pipelineStatus.started_at) : new Date();
+    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [pipelineStatus?.running, pipelineStatus?.started_at]);
 
   const streamLogs = async (tok) => {
-    const res = await fetch(`${API}/pipeline/logs`, { headers: authHeaders(tok) });
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop();
-      for (const part of parts) {
-        const line = part.replace(/^data: /, "");
-        if (line === "[DONE]") return;
-        if (line) setLogs(l => [...l, line]);
+    if (streamingRef.current) return; // already connected
+    streamingRef.current = true;
+    try {
+      const res = await fetch(`${API}/pipeline/logs`, { headers: authHeaders(tok) });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          const line = part.replace(/^data: /, "");
+          if (line === "[DONE]") return;
+          if (line) setLogs(l => [...l, line]);
+        }
       }
+    } finally {
+      streamingRef.current = false;
     }
   };
+
+  // Auto-connect log stream whenever backend says pipeline is running and we have no active stream
+  useEffect(() => {
+    if (pipelineStatus?.running && !streamingRef.current) {
+      streamLogs(token);
+    }
+  }, [pipelineStatus?.running]);
 
   const run = async (stages = selectedStages) => {
     setError(""); setLogs([]);
     try {
-      await api("POST", "/pipeline/run", { stages, min_score: minScore, workers, validation, url_filter: urlFilter.length > 0 ? urlFilter : undefined }, token);
+      await api("POST", "/pipeline/run", { stages, min_score: minScore, workers, validation, results_per_site: resultsPerSite, url_filter: urlFilter.length > 0 ? urlFilter : undefined }, token);
       fetchStatus();
       streamLogs(token);
     } catch (e) { setError(e.message); }
   };
 
   const stop = async () => { await api("POST", "/pipeline/stop", null, token).catch(() => {}); fetchStatus(); };
+
+  const forceReset = async () => {
+    await api("POST", "/pipeline/reset", null, token).catch(() => {});
+    setLogs([]); setError(""); setElapsed(0);
+    fetchStatus();
+  };
 
   const running = pipelineStatus?.running;
   const allSelected = selectedStages.includes("all");
@@ -1076,9 +1187,67 @@ function PipelineTab({ token, initialStages, initialUrls }) {
 
   const pct = ((stageProgress.completed.length + (stageProgress.current ? 0.5 : 0)) / STAGES.length) * 100;
 
+  // Orphaned: running for >30s with zero log lines (SSE failed or process hung silently)
+  const isOrphaned = running && logs.length === 0 && elapsed > 30;
+
+  const stagesLabel = allSelected
+    ? STAGES.map(s => `${STAGE_ICON[s]} ${s}`).join("  →  ")
+    : selectedStages.map(s => `${STAGE_ICON[s]} ${s}`).join("  →  ");
+
   return (
     <div>
       <SectionTitle>Pipeline</SectionTitle>
+
+      {/* ── Orphaned runner warning ── */}
+      {isOrphaned && (
+        <div style={{ ...css.card, borderColor:C.warn+"66", background:C.warn+"11", marginBottom:16, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <div style={{ color:C.warn, fontWeight:700, fontSize:13 }}>⚠ Pipeline appears stuck</div>
+            <div style={{ color:C.muted, fontSize:11, marginTop:3 }}>Server reports a running pipeline but no output was received. This usually means a previous run crashed.</div>
+          </div>
+          <button onClick={forceReset} style={{ ...css.btnDanger, whiteSpace:"nowrap", marginLeft:16 }}>Force Reset</button>
+        </div>
+      )}
+
+      {/* ── Run Plan banner ── */}
+      {!running && (
+        <div style={{ ...css.card, marginBottom:16, borderColor: error ? C.danger+"55" : C.accent+"44", background: error ? C.danger+"08" : C.accent+"08" }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>Will Run</div>
+          <div style={{ fontSize:13, color:C.accent, fontWeight:700, letterSpacing:"0.04em", marginBottom:10, lineHeight:1.8 }}>
+            {stagesLabel}
+          </div>
+          <div style={{ fontSize:11, color:C.muted, marginBottom:14 }}>
+            {resultsPerSite} jobs/site · {workers} worker{workers > 1 ? "s" : ""} · {validation} validation · min score {minScore}
+            {urlFilter.length > 0 && <span style={{ color:C.blue }}> · scoped to {urlFilter.length} job{urlFilter.length > 1 ? "s" : ""} <button onClick={() => setUrlFilter([])} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:10, fontFamily:"inherit" }}>✕</button></span>}
+          </div>
+          {error && (
+            <div style={{ background:C.danger+"22", border:`1px solid ${C.danger}55`, borderRadius:5, padding:"8px 12px", color:C.danger, fontSize:12, marginBottom:12 }}>
+              ✗ {error}
+            </div>
+          )}
+          <button onClick={() => run()} style={{ ...css.btn(), width:"100%", padding:"11px" }}>
+            ▶ Run {allSelected ? "All Stages" : selectedStages.join(" + ")}
+          </button>
+        </div>
+      )}
+
+      {/* ── Running banner ── */}
+      {running && (
+        <div style={{ ...css.card, marginBottom:16, borderColor:C.accent+"66", background:C.accent+"08" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div>
+              <div style={{ fontSize:13, color:C.accent, fontWeight:700 }}>
+                ◉ Running — {Math.floor(elapsed/60)}:{String(elapsed%60).padStart(2,"0")} elapsed
+              </div>
+              <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{logs.length} log lines · {stageProgress.completed.length} stage{stageProgress.completed.length !== 1 ? "s" : ""} done{stageProgress.current ? ` · ${stageProgress.current} in progress` : ""}</div>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={stop} style={css.btnDanger}>■ Stop</button>
+              <button onClick={forceReset} style={{ ...css.btn("outline"), fontSize:11, padding:"6px 12px" }}>Force Reset</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Stage progress bar ── */}
       {(running || stageProgress.completed.length > 0 || stageProgress.current) && (
@@ -1144,17 +1313,32 @@ function PipelineTab({ token, initialStages, initialUrls }) {
 
           {/* Quick-run shortcuts */}
           <div style={css.card}>
-            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:12 }}>Quick Run</div>
+            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:12 }}>Quick Select</div>
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-              {QUICK_RUNS.slice(0,3).map(q => (
-                <button key={q.label} onClick={() => run(q.stages)} disabled={running} style={{
-                  ...css.btn(q.stages.includes("all") ? "primary" : "outline"),
-                  textAlign:"left", padding:"9px 14px", display:"flex", justifyContent:"space-between", alignItems:"center",
-                }}>
-                  <span>{q.label}</span>
-                  <span style={{ fontSize:10, opacity:0.7, fontWeight:400 }}>{q.desc}</span>
-                </button>
-              ))}
+              {QUICK_RUNS.slice(0,3).map(q => {
+                const isActive = activeQuickRun === q.label;
+                return (
+                  <button key={q.label} disabled={running} onClick={() => {
+                    setSelectedStages(q.stages);
+                    setActiveQuickRun(q.label);
+                    setError("");
+                  }} style={{
+                    textAlign:"left", padding:"9px 14px", display:"flex", justifyContent:"space-between",
+                    alignItems:"center", borderRadius:6, fontSize:12, fontFamily:"inherit", cursor:"pointer",
+                    background: isActive ? C.accent : "transparent",
+                    color:      isActive ? "#0a0b0f" : C.muted,
+                    border:`1px solid ${isActive ? C.accent : C.border}`,
+                    fontWeight: isActive ? 700 : 400,
+                    transition:"all 0.15s",
+                  }}>
+                    <span>{isActive ? "✓ " : ""}{q.label}</span>
+                    <span style={{ fontSize:10, opacity: isActive ? 0.7 : 0.5, fontWeight:400 }}>{q.desc}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize:10, color:C.muted, marginTop:10 }}>
+              Select a preset above or pick stages manually below — then hit ▶ Run in the banner.
             </div>
           </div>
 
@@ -1217,6 +1401,19 @@ function PipelineTab({ token, initialStages, initialUrls }) {
                 <input style={css.input} type="number" min={1} max={8} value={workers} onChange={e => setWorkers(+e.target.value)} />
               </div>
               <div>
+                <label style={css.label}>Max jobs per site (discover) — lower = faster test run</label>
+                <div style={{ display:"flex", gap:6, marginTop:4 }}>
+                  {[5, 10, 25, 50].map(n => (
+                    <button key={n} onClick={() => setResultsPerSite(n)} style={{
+                      flex:1, padding:"5px 0", borderRadius:5, fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                      background: resultsPerSite === n ? C.accent : "transparent",
+                      color:      resultsPerSite === n ? "#0a0b0f" : C.muted,
+                      border:`1px solid ${resultsPerSite === n ? C.accent : C.border}`,
+                    }}>{n}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
                 <label style={css.label}>Validation Mode</label>
                 <select style={css.input} value={validation} onChange={e => setValidation(e.target.value)}>
                   <option value="lenient">lenient — fastest, fewest API calls</option>
@@ -1228,34 +1425,36 @@ function PipelineTab({ token, initialStages, initialUrls }) {
             </div>
           </div>
 
-          {error && <div style={{ ...css.card, borderColor:C.danger+"55", color:C.danger, fontSize:12 }}>⚠ {error}</div>}
-
-          {urlFilter.length > 0 ? (
-            <div style={{
-              ...css.card, borderColor:C.blue+"55", color:C.blue,
-              padding:"8px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11,
-            }}>
-              <span>▸ Scoped to {urlFilter.length} selected job{urlFilter.length > 1 ? "s" : ""} from Jobs tab</span>
-              <button onClick={() => setUrlFilter([])} style={{
-                background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:11, fontFamily:"inherit",
-              }}>✕ Run all</button>
+          {/* Stage detail descriptions */}
+          <div style={{ ...css.card, padding:"10px 14px" }}>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>What each selected stage does</div>
+            <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+              {STAGES.filter(s => allSelected || selectedStages.includes(s)).map(s => (
+                <div key={s} style={{ display:"flex", gap:8, fontSize:11 }}>
+                  <span style={{ color:C.accent, width:60, flexShrink:0 }}>{STAGE_ICON[s]} {s}</span>
+                  <span style={{ color:C.muted }}>{STAGE_DESC[s]}</span>
+                </div>
+              ))}
             </div>
-          ) : null}
-
-          <div style={{ display:"flex", gap:10 }}>
-            <button onClick={() => run()} disabled={running} style={{ ...css.btn(), flex:1 }}>
-              {running ? "◉ Running..." : `▶ Run ${allSelected ? "All Stages" : selectedStages.join(" + ")}${urlFilter.length > 0 ? ` (${urlFilter.length} jobs)` : ""}`}
-            </button>
-            {running && <button onClick={stop} style={css.btnDanger}>■ Stop</button>}
           </div>
         </div>
 
         {/* Right: logs */}
         <div style={{ ...css.card, display:"flex", flexDirection:"column" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase" }}>
+            <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.1em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:10 }}>
               Live Logs
-              {running && <span style={{ color:C.accent, marginLeft:10 }}>● LIVE</span>}
+              {running && (
+                <>
+                  <span style={{ color:C.accent }}>● LIVE</span>
+                  <span style={{ color:C.warn, fontWeight:700 }}>
+                    {Math.floor(elapsed/60)}:{String(elapsed%60).padStart(2,"0")} elapsed
+                  </span>
+                  <span style={{ color:C.muted, fontWeight:400, textTransform:"none", letterSpacing:0 }}>
+                    — {logs.length} lines
+                  </span>
+                </>
+              )}
             </div>
             <button onClick={() => setLogs([])} style={{ ...css.btn("outline"), padding:"3px 10px", fontSize:10 }}>Clear</button>
           </div>
@@ -1519,11 +1718,14 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
     if (filterScore) jobs = jobs.filter(j => j.fit_score != null && j.fit_score >= +filterScore);
 
     jobs = [...jobs].sort((a, b) => {
-      if (sortBy === "newest") return new Date(b.discovered_at||0) - new Date(a.discovered_at||0);
-      if (sortBy === "oldest") return new Date(a.discovered_at||0) - new Date(b.discovered_at||0);
-      // "score" (default): best score first, then newest
+      // Use date_posted if available, fall back to discovered_at
+      const dateA = a.date_posted || a.discovered_at || 0;
+      const dateB = b.date_posted || b.discovered_at || 0;
+      if (sortBy === "newest") return new Date(dateB) - new Date(dateA);
+      if (sortBy === "oldest") return new Date(dateA) - new Date(dateB);
+      // "score" (default): best score first, then newest posted
       const sd = (b.fit_score??-1) - (a.fit_score??-1);
-      return sd !== 0 ? sd : new Date(b.discovered_at||0) - new Date(a.discovered_at||0);
+      return sd !== 0 ? sd : new Date(dateB) - new Date(dateA);
     });
     return jobs;
   }, [allJobs, search, filterSite, filterScore, sortBy]);
@@ -1610,11 +1812,17 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
           <option value="7">7+ good (≥min)</option>
           <option value="5">5+ fair</option>
         </select>
-        <select style={{ ...css.input, width:160 }} value={sortBy} onChange={e => setSortBy(e.target.value)}>
+        <select style={{ ...css.input, width:160 }} value={sortBy === "newest" || sortBy === "oldest" ? "date" : sortBy}
+          onChange={e => setSortBy(e.target.value === "date" ? "newest" : e.target.value)}>
           <option value="score">↓ Best score first</option>
-          <option value="newest">↓ Newest found first</option>
-          <option value="oldest">↑ Oldest found first</option>
+          <option value="date">↕ Sort by date posted</option>
         </select>
+        {(sortBy === "newest" || sortBy === "oldest") && (
+          <button onClick={() => setSortBy(s => s === "newest" ? "oldest" : "newest")}
+            style={{ ...css.btn("outline"), padding:"8px 12px", fontSize:12, color:C.accent, borderColor:C.accent+"66" }}>
+            {sortBy === "newest" ? "↓ Newest" : "↑ Oldest"}
+          </button>
+        )}
         {(search || filterSite || filterScore) && (
           <button onClick={() => { setSearch(""); setFilterSite(""); setFilterScore(""); }}
             style={{ ...css.btn("outline"), padding:"8px 12px", fontSize:11 }}>✕ Clear</button>
@@ -1814,13 +2022,15 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
                 <th style={{ padding:"10px 14px", width:32 }}>
                   <input type="checkbox" checked={allPageSelected} onChange={toggleAll} />
                 </th>
-                {["Title","Location","Site","Score","Status","Attempts","Found","Files"].map(h => (
-                  <th key={h} onClick={h==="Found" ? () => setSortBy(s => s==="newest"?"oldest":"newest") : undefined}
-                    title={h==="Found" ? "Click to sort by date" : undefined}
-                    style={{ padding:"10px 14px", color: h==="Found" ? (sortBy!=="score"?C.accent:C.muted) : C.muted,
+                {["Title","Location","Site","Score","Status","Attempts","Posted","Files"].map(h => (
+                  <th key={h} onClick={h==="Posted" ? () => setSortBy(s => s==="newest"?"oldest":"newest") : undefined}
+                    title={h==="Posted" ? "Click to toggle date sort (newest/oldest). Bright = actual posted date from job board; dim = discovery date." : undefined}
+                    style={{ padding:"10px 14px", color: h==="Posted" ? (sortBy==="newest"||sortBy==="oldest" ? C.accent : C.muted) : C.muted,
                       fontWeight:400, letterSpacing:"0.08em", textTransform:"uppercase", fontSize:10, textAlign:"left",
-                      cursor: h==="Found" ? "pointer" : "default" }}>
-                    {h}{h==="Found" && sortBy==="newest" ? " ↓" : h==="Found" && sortBy==="oldest" ? " ↑" : ""}
+                      cursor: h==="Posted" ? "pointer" : "default" }}>
+                    {h==="Posted"
+                      ? `Posted ${sortBy==="newest" ? "↓" : sortBy==="oldest" ? "↑" : "↕"}`
+                      : h}
                   </th>
                 ))}
               </tr>
@@ -1873,9 +2083,25 @@ function JobsTab({ token, onGoToPipeline, onGoToApply }) {
                         ? <span style={css.tag(job.apply_attempts > 1 ? C.warn : C.muted)} title={`Attempted ${job.apply_attempts} time(s)`}>{job.apply_attempts}×</span>
                         : <span style={{ color:C.border }}>—</span>}
                     </td>
-                    <td style={{ padding:"9px 14px", color:C.muted, fontSize:11 }}
-                      title={job.discovered_at ? new Date(job.discovered_at).toLocaleString() : ""}>
-                      {job.discovered_at ? daysAgo(job.discovered_at) || new Date(job.discovered_at).toLocaleDateString() : "—"}
+                    <td style={{ padding:"9px 14px", fontSize:11 }}>
+                      {(() => {
+                        const posted = job.date_posted;   // "YYYY-MM-DD" from job board
+                        const found  = job.discovered_at; // when we scraped it
+                        if (!posted && !found) return "—";
+                        return (
+                          <span title={posted ? `Posted: ${posted}\nFound: ${found ? new Date(found).toLocaleString() : "—"}` : new Date(found).toLocaleString()}>
+                            <span style={{ color: posted ? C.text : C.muted }}>
+                              {posted
+                                ? new Date(posted + "T00:00:00").toLocaleDateString("en-GB", { day:"numeric", month:"short" })
+                                : new Date(found).toLocaleDateString("en-GB", { day:"numeric", month:"short" })}
+                            </span>
+                            <span style={{ color:C.muted, display:"block", fontSize:10 }}>
+                              {posted ? daysAgo(posted + "T00:00:00") : daysAgo(found)}
+                              {!posted && <span style={{ color:C.border }}> (found)</span>}
+                            </span>
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding:"9px 14px" }} onClick={e => e.stopPropagation()}>
                       <div style={{ display:"flex", gap:5 }}>
@@ -3375,7 +3601,6 @@ export default function App() {
   const CONTENT = {
     dashboard: <DashboardTab token={token} />,
     setup:     <SetupTab token={token} />,
-    pipeline:  <PipelineTab token={token} initialStages={pipelineStages} initialUrls={pipelineUrls} />,
     jobs:      <JobsTab token={token} onGoToPipeline={goToPipeline} onGoToApply={() => setTab("apply")} />,
     apply:     <ApplyTab token={token} />,
     tracker:   <TrackerTab token={token} />,
@@ -3385,7 +3610,11 @@ export default function App() {
     <div style={{ ...css.app, display:"flex" }}>
       <Sidebar tab={tab} setTab={setTab} user={user} onLogout={logout} onTour={replayTour} />
       <main style={{ flex:1, padding:"32px 36px", overflowY:"auto", maxHeight:"100vh" }}>
-        {CONTENT[tab]}
+        {/* PipelineTab stays always mounted so logs + SSE state survive tab switches */}
+        <div style={{ display: tab === "pipeline" ? "block" : "none" }}>
+          <PipelineTab token={token} initialStages={pipelineStages} initialUrls={pipelineUrls} />
+        </div>
+        {tab !== "pipeline" && CONTENT[tab]}
       </main>
       {showTour && <TourModal onClose={closeTour} onNavigate={(t) => { setTab(t); closeTour(); }} />}
     </div>

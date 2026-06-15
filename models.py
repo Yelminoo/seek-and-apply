@@ -109,6 +109,8 @@ class PipelineRunRequest(BaseModel):
     min_score: int = 7
     workers: int = 1
     validation: str = "normal"
+    url_filter: list[str] = []
+    results_per_site: int = 0  # 0 = use whatever is in searches.yaml
 
 class ApplyRunRequest(BaseModel):
     limit: int = 5
